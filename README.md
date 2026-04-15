@@ -2,8 +2,6 @@
 
 A knowledge base that **curates itself**. Three AI agents run on a schedule: two curate content into the KB, and a third proactively bookmarks tweets from your X feed that match your established taste. Together they form a closed loop — your interests are discovered, filtered, analyzed, and fed back into the taste model end-to-end. You give 0-10 ratings to what you read; the agents learn and improve over time.
 
-This is what powers a researcher's daily reading workflow — but the architecture works for any researcher, analyst, or domain expert who reads widely and wants AI to do the synthesis work.
-
 ---
 
 ## What you get
