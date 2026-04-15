@@ -1,0 +1,45 @@
+{
+  "name": "reader",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prebuild": "tsx scripts/sync-content.ts && tsx scripts/build-manifest.ts",
+    "predev": "tsx scripts/sync-content.ts && tsx scripts/build-manifest.ts",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "manifest": "tsx scripts/build-manifest.ts",
+    "check": "tsx scripts/check-parse.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
+    "@octokit/rest": "^22.0.1",
+    "fast-glob": "^3.3.3",
+    "fuse.js": "^7.3.0",
+    "jose": "^6.2.2",
+    "next": "16.2.3",
+    "next-mdx-remote": "^6.0.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "rehype-autolink-headings": "^7.1.0",
+    "rehype-pretty-code": "^0.14.3",
+    "rehype-slug": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "shiki": "^4.0.2",
+    "unist-util-visit": "^5.1.0",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@tailwindcss/typography": "^0.5.19",
+    "@types/node": "^20.19.39",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "tailwindcss": "^4",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}

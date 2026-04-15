@@ -1,0 +1,15 @@
+{
+  "github_repo_url": "https://github.com/<your-username>/<your-kb-repo>",
+  "github_repo_branch": "main",
+  "mount_path": "/workspace/kb",
+  "environment_id": "env_REPLACE_ME_AFTER_SETUP",
+  "agent_id": "agent_REPLACE_ME_AFTER_SETUP",
+  "agent_version": null,
+  "chrome_user_data_dir": "./chrome-profile",
+  "max_bookmarks_per_run": 100,
+  "bookmark_environment_id": "env_REPLACE_ME_AFTER_BOOKMARK_SETUP",
+  "bookmark_agent_id": "agent_REPLACE_ME_AFTER_BOOKMARK_SETUP",
+  "bookmark_agent_version": null,
+  "bookmark_candidates_per_run": 100,
+  "bookmark_feed_scroll_rounds": 8
+}

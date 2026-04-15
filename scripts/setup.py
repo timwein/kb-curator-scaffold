@@ -30,9 +30,9 @@ from dotenv import dotenv_values, set_key
 # Paths
 # --------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).parent.resolve()
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 ENV_FILE = PROJECT_ROOT / ".env"
-SYSTEM_PROMPT_FILE = PROJECT_ROOT / "kb-blog-curator.system.md"
+SYSTEM_PROMPT_FILE = PROJECT_ROOT / "agents" / "kb-blog-curator.system.md"
 
 # The authoritative seed files live in the lowercase folder — topic_taxonomy.md
 # and url_sources.py only exist there, so use it as canonical.

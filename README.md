@@ -16,7 +16,7 @@ All three agents share the same GitHub repo (`<your-kb-repo>` in the original se
 
 The KB grows by accretion. Topics files cross-link tweet content with blog content. Over time, the agents discover new sources beyond your seed list. The bookmarker's taste profile is regenerated from the analyses the ingestion agent writes, so every rating you give feeds forward into *what* the bookmarker picks next. You give feedback by rating analyses (`user_score: 0-10`) — the agents adjust their interest model accordingly.
 
-**Optional reader frontend.** GitHub is a poor reading surface for long-form analyses. You can deploy a Next.js reader to Vercel that gives you a private mobile-friendly reading surface, UI-based rating (commits `user_score` back to the KB so agents pick it up), and per-page chat with Claude grounded in the page content. A working reference implementation lives at [timwein/tweet-knowledge-base/reader](https://github.com/timwein/tweet-knowledge-base/tree/main/reader) — copy that `reader/` directory into your own KB repo to reuse it. See Step 7.
+**Optional reader frontend.** GitHub is a poor reading surface for long-form analyses. You can deploy a Next.js reader to Vercel that gives you a private mobile-friendly reading surface, UI-based rating (commits `user_score` back to the KB so agents pick it up), and per-page chat with Claude grounded in the page content. The full reader lives in [`reader/`](./reader) in this repo — copy that directory into your own KB repo and deploy. See Step 7.
 
 ---
 
@@ -117,7 +117,7 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 **Seed for the taste profile:** generated one-time (and re-runnable monthly) by a `build_taste_profile.py` script from the corpus of past analyses in `YYYY/MM/DD/` plus topic signals from `_system/seed/`. The profile ranks favored authors by `count × avg_relevance`, lists favored topics, and surfaces calibration exemplars (high and low relevance) for the agent to anchor on.
 
-**Where the code lives:** the orchestrator, feed fetcher, Playwright bookmark-click action, and taste-profile generator live in a separate orchestrator repo (e.g., `tweet-bookmarker-agent` or similar — kept apart from the KB repo because it holds a launchd plist with API keys baked in for the local user only). Only the runtime artifacts (taste profile + considered log) live in the KB.
+**Where the code lives:** [`tweet-agents/`](./tweet-agents) in this repo. That directory ships the orchestrator (`run_bookmarker.py`), feed fetcher (`lib/feed_fetcher.py`), Playwright bookmark-click action (`lib/bookmarker.py`), agent system prompt (`lib/bookmark_prompts.py`), taste-profile generator (`build_taste_profile.py`), and a launchd plist template. Keep your `config.json` and any filled-in plist out of version control — both hold credentials (the scaffold's `.gitignore` already excludes them). Only the runtime artifacts (taste profile + considered log) live in the KB itself.
 
 ### `tweet-kb-agent`
 
@@ -301,9 +301,39 @@ Six secrets on the KB repo (Settings → Secrets and variables → Actions):
 
 A `setup-secrets.py` script in this repo automates this via the GitHub API if your PAT has `Secrets: Read & write`.
 
-### Step 7: Deploy the reader (optional)
+### Step 7: Deploy the tweet agents (ingestion + bookmarker)
 
-The KB is plain markdown on GitHub, which is great for agents and source-of-truth storage but rough for reading on mobile. A reference Next.js reader lives at [timwein/tweet-knowledge-base/reader](https://github.com/timwein/tweet-knowledge-base/tree/main/reader) — copy that directory into your KB repo, then deploy to Vercel.
+The tweet-kb-agent (analysis + commit) and tweet-bookmarker (hourly feed scoring) both live under [`tweet-agents/`](./tweet-agents) and share a single Python package. Both run locally on your Mac — tweet ingestion because X's authenticated feeds are easier from a real Chrome profile, bookmarking because the write action (clicking Bookmark) must happen from your authenticated session.
+
+Detailed walkthrough: [`tweet-agents/SETUP.md`](./tweet-agents/SETUP.md). The short version:
+
+```bash
+cd tweet-agents
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+
+cp config.example.json config.json
+# edit config.json → set github_repo_url to your own KB repo
+
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_PAT=github_pat_...
+
+python setup_tweet_ingest.py   # creates the tweet-kb-agent
+python setup_bookmarker.py     # creates the tweet-bookmark-agent
+
+python run_tweet_ingest.py     # manual first run (analyzes your current bookmarks)
+python run_bookmarker.py       # manual first run (scores feeds + bookmarks top picks)
+```
+
+Once manual runs are clean:
+
+- Schedule `run_tweet_ingest.py` 3×/day (`python make_launchd.py` generates a LaunchAgent plist).
+- Schedule `run_bookmarker.py` hourly 06:00–00:00 using `com.example.tweet-bookmarker.plist.template` as a starting point. Fill in the paths + secrets and drop it into `~/Library/LaunchAgents/`. **Never commit a filled-in plist** — the `.gitignore` excludes it.
+
+### Step 8: Deploy the reader (optional Vercel frontend)
+
+The KB is plain markdown on GitHub, which is great for agents and source-of-truth storage but rough for reading on mobile. The [`reader/`](./reader) directory is a Next.js app ready to deploy to Vercel.
 
 What the reader gives you:
 
@@ -313,17 +343,17 @@ What the reader gives you:
 
 **To deploy**:
 
-1. Copy the `reader/` directory from the reference repo into your KB repo root. Commit + push.
+1. Copy the `reader/` directory from this scaffold into your KB repo root. Commit + push.
 2. Create a Vercel project from your KB repo. Set **Root Directory** = `reader`.
-3. Add env vars (template at `reader/.env.local.example`): `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_TOKEN` (fine-grained PAT with `contents: write` scoped only to this repo), `ANTHROPIC_API_KEY`, `GITHUB_WEBHOOK_SECRET` (random string), and either the two `CF_ACCESS_*` vars (if you're gating via Cloudflare Access) or `SKIP_ACCESS_VERIFY=true` (to defer auth).
+3. Add env vars (template at `reader/.env.local.example`): `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_TOKEN` (fine-grained PAT with `contents: write` scoped only to this repo), `ANTHROPIC_API_KEY`, `GITHUB_WEBHOOK_SECRET` (random string), and either the two `CF_ACCESS_*` vars (if you're gating via Cloudflare Access) or `SKIP_ACCESS_VERIFY=true` (to defer auth). Alternative: set `BASIC_AUTH_USER` + `BASIC_AUTH_PASSWORD` for a simpler HTTP Basic Auth gate.
 4. Add a GitHub webhook on your KB repo: Settings → Webhooks → Add. URL = `https://<your-vercel-host>/api/revalidate`, same secret, "Just the push event". This triggers on-demand ISR when agents commit.
-5. **(Optional)** Gate behind Cloudflare Access for private access. Requires a custom domain you own (Access can't protect `*.vercel.app` hostnames). Instructions in `reader/README.md`.
+5. **(Optional)** Gate behind Cloudflare Access for private access. Requires a custom domain you own (Access can't protect `*.vercel.app` hostnames). Instructions in [`reader/README.md`](./reader/README.md).
 
-**Gotcha**: Vercel Hobby refuses to deploy commits whose committer can't be associated with a GitHub user. If your agents commit as `<name>@local` or any synthetic email, change their `git config user.email` to a GitHub-verified email on your account. Also avoid `Co-Authored-By` trailers on your own commits — Hobby treats them as multi-author collaboration and blocks.
+**Gotcha**: Vercel Hobby refuses to deploy commits whose committer can't be associated with a GitHub user. If your agents commit as `<name>@local` or any synthetic email, change their `git config user.email` to a GitHub-verified email on your account (`GIT_COMMITTER_EMAIL` env var if using `run_bookmarker.py` / `build_taste_profile.py`). Also avoid `Co-Authored-By` trailers on your own commits — Hobby treats them as multi-author collaboration and blocks.
 
-The reader's verification rubric (30 pass/fail items) lives at `reader/tasks/todo.md` in the reference repo — walk it after deploy to confirm each piece works.
+Reader design details: [`reader/SPEC.md`](./reader/SPEC.md).
 
-### Step 8: Trigger the first run
+### Step 9: Trigger the first blog-curator run
 
 Manual trigger from the GitHub Actions tab (Actions → kb-blog-curator → Run workflow → slot=manual). The first run is slow (30-50 min) because it builds the RSS feed cache from cold. Subsequent runs are 15-25 min with the cache warm.
 
@@ -382,7 +412,7 @@ You can reduce costs by:
 | `git push` fails with 503 | Anthropic CMA git proxy issue | Agent system prompt embeds PAT in remote URL to bypass proxy |
 | Session times out mid-analysis | Container 45-min limit | Incremental commit pattern means everything before the crash is durable |
 | Agent confused by edge case | Bad prompt instruction | Edit `system.md`, `setup.py --update`, retry |
-| Quartz deployment fails | Pages not configured | Settings → Pages → Source: GitHub Actions |
+| Reader deploy fails on Vercel | Committer email isn't GitHub-verified | Set `GIT_COMMITTER_EMAIL` env var (see Step 8 Gotcha) |
 | Two agents conflict on git push | Concurrent push to main | Both agents do `pull --rebase` and retry up to 3x |
 
 ---
@@ -406,20 +436,24 @@ A few principles the system depends on:
 
 ## Repo contents
 
-This `Blog-ingestion-agent` repo (separate from the KB itself) contains everything you need to set up your own version:
+This scaffold is everything you need to stand up the full system — three managed agents, the KB repo conventions, and the reader frontend. Clone it, adapt the persona/topics + repo URLs to your own, and follow the steps above. The scaffold itself is **separate** from the KB repo it configures: you keep this repo for setup code, and the agents populate a private KB repo elsewhere.
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `kb-blog-curator.system.md` | Blog agent system prompt — adapt the persona/topics, keep the structure |
-| `setup.py` | Creates/updates Anthropic environment + agent, uploads seed files |
-| `run.py` | Runtime script invoked by GitHub Actions for each session |
-| `migrate_repo.py` | One-shot migration script (date-first restructure) — useful if you start with the old layout |
-| `blog-ingest.yml` | GitHub Actions workflow — cron 3x daily + manual trigger |
-| `cron-watchdog.yml` | Hourly watchdog for missed cron runs |
-| `quartz/` | Quartz config for browsable web view |
-| `deploy-quartz.yml` | GitHub Actions workflow for Pages deployment |
-| `subscriptions.md`, `topic_taxonomy.md`, `interests_seed.md` | Example seed files (replace with your own) |
-| `url_sources.py` | Extract URL corpus from a Claude export |
+| `agents/kb-blog-curator.system.md` | Blog agent system prompt — adapt the persona/topics, keep the structure |
+| `scripts/setup.py` | Blog agent: creates/updates Anthropic environment + agent, uploads seed files |
+| `scripts/run.py` | Blog agent: runtime script invoked by GitHub Actions for each session |
+| `scripts/migrate_repo.py` | One-shot migration script (date-first restructure) — useful if you start with an older content-type-first layout |
+| `scripts/url_sources.py` | Extract URL corpus from a Claude.ai conversation export |
+| `.github/workflows/blog-ingest.yml` | Blog agent workflow — cron 3x daily + manual trigger |
+| `.github/workflows/cron-watchdog.yml` | Hourly watchdog for missed cron runs |
+| `seed-templates/` | Example seed files (interests, topic taxonomy, subscriptions) — replace with your own |
+| `tweet-agents/` | Local orchestrator for the tweet-kb-agent + tweet-bookmarker (Python + Playwright). See `tweet-agents/SETUP.md`. |
+| `tweet-agents/lib/prompts.py` | Tweet ingestion agent system prompt |
+| `tweet-agents/lib/bookmark_prompts.py` | Bookmarker agent system prompt + custom-tool schema |
+| `tweet-agents/build_taste_profile.py` | Regenerates the bookmarker's taste profile from the corpus of rated analyses |
+| `tweet-agents/com.example.tweet-bookmarker.plist.template` | launchd template — fill in paths + secrets, never commit the filled version |
+| `reader/` | Next.js app you deploy to Vercel as a mobile-friendly reading surface. See `reader/SPEC.md` + `reader/README.md`. |
 
 ---
 

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Replace <YOUR-LABEL> with your own reverse-DNS label, e.g.
+         com.yourname.tweet-bookmarker. Replace <PATH-TO-CHECKOUT> with the
+         absolute path to your tweet-agents checkout. Replace the two secret
+         values with your own. DO NOT commit a filled-in plist — it contains
+         credentials.
+
+         `make_launchd.py` generates a filled-in copy of this template for you
+         and writes it to ~/Library/LaunchAgents/. -->
+
+    <key>Label</key>
+    <string><YOUR-LABEL></string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string><PATH-TO-CHECKOUT>/.venv/bin/python</string>
+        <string><PATH-TO-CHECKOUT>/run_bookmarker.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string><PATH-TO-CHECKOUT></string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>sk-ant-...</string>
+        <key>GITHUB_PAT</key>
+        <string>github_pat_...</string>
+    </dict>
+
+    <!-- Fire every hour from 6am through midnight local time.
+         19 entries: hours 6..23 (daytime + evening) plus hour 0 (midnight
+         at end of day). No fires between 00:00 and 06:00 so the overnight
+         window stays quiet. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/tweet-bookmarker.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/tweet-bookmarker.log</string>
+
+    <!-- Don't run on load — wait for the next scheduled fire. -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

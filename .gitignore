@@ -1,9 +1,25 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
 __pycache__/
 *.pyc
+*.pyo
 .DS_Store
 node_modules/
-.quartz-cache/
-public/
+.next/
+.venv/
+
+# Local-only config holding real IDs + paths
+tweet-agents/config.json
+
+# Filled-in launchd plists contain secrets — never commit
+com.*.plist
+!com.example.*.plist.template
+
+# Chrome profile used by Playwright — huge + contains cookies
+tweet-agents/chrome-profile/
+
+# Reader content cache (generated at build)
+reader/.kb-content/
+reader/public/pages.json
