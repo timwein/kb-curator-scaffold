@@ -1,0 +1,93 @@
+# Deploy this file to the KB repo at .github/workflows/blog-ingest.yml
+#
+# Runs the kb-blog-curator managed agent three times daily:
+#   07:00 PT → morning  (14:00 UTC during PDT / 15:00 UTC during PST)
+#   12:00 PT → midday   (19:00 UTC during PDT / 20:00 UTC during PST)
+#   18:00 PT → evening  (01:00 UTC next day during PDT / 02:00 UTC next day during PST)
+#
+# The cron expressions are PDT-aligned (matching the current date range).
+# They will drift by 1 hour during PST (Nov–Mar). GitHub Actions cron is UTC
+# and does not understand DST. If you care about hard-locked clock times,
+# rotate these twice a year or accept the drift.
+
+name: kb-blog-curator
+
+on:
+  schedule:
+    - cron: '0 14 * * *'   # 07:00 PDT / 06:00 PST — morning
+    - cron: '0 19 * * *'   # 12:00 PDT / 11:00 PST — midday
+    - cron: '0 1 * * *'    # 18:00 PDT / 17:00 PST — evening
+  workflow_dispatch:       # manual trigger from the Actions tab
+    inputs:
+      slot:
+        description: 'Slot name (morning/midday/evening/manual)'
+        required: false
+        default: 'manual'
+
+permissions:
+  contents: write          # the managed agent pushes to this repo via its own clone;
+                           # GITHUB_TOKEN still needs write if we ever want to commit
+                           # workflow-side artifacts (not used yet)
+
+concurrency:
+  # Prevent two concurrent runs from fighting git push
+  group: kb-blog-curator
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45    # a session that takes this long is a red flag — fail fast
+
+    steps:
+      - name: Determine slot
+        id: slot
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Map cron hour (UTC) to slot name — covers both PDT and PST
+            case "$(date -u +%H)" in
+              14|15) slot=morning ;;   # 07:00 PT (PDT=14, PST=15)
+              19|20) slot=midday  ;;   # 12:00 PT (PDT=19, PST=20)
+              01|02) slot=evening ;;   # 18:00 PT (PDT=01, PST=02)
+              *)     slot=manual  ;;
+            esac
+            echo "slot=$slot" >> "$GITHUB_OUTPUT"
+          else
+            echo "slot=${{ github.event.inputs.slot || 'manual' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout runner script
+        # We only need run.py — not the whole KB. The managed agent clones
+        # the KB itself as a session resource.
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/run-blog-ingest.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install 'anthropic>=0.40.0'
+
+      - name: Run kb-blog-curator session
+        env:
+          # Anthropic credentials
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Agent + environment identifiers (from setup.py — stored as repo secrets)
+          AGENT_ID:          ${{ secrets.AGENT_ID }}
+          AGENT_VERSION:     ${{ secrets.AGENT_VERSION }}
+          ENV_ID:            ${{ secrets.ENV_ID }}
+          SEED_FILE_IDS:     ${{ secrets.SEED_FILE_IDS }}
+          # KB repo — the agent clones this itself inside the session container.
+          # Default: use the workflow's GITHUB_TOKEN (valid for the job's lifetime).
+          # Alternative: set KB_REPO_PAT as a repo secret (PAT with contents:write)
+          # if you need the token to outlive the workflow run, or want commits to
+          # trigger other workflows (GITHUB_TOKEN-authored commits do NOT trigger).
+          KB_REPO_URL:       ${{ github.server_url }}/${{ github.repository }}
+          KB_REPO_TOKEN:     ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
+          SLOT:              ${{ steps.slot.outputs.slot }}
+        run: python scripts/run-blog-ingest.py
