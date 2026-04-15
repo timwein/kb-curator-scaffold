@@ -1,0 +1,70 @@
+/**
+ * Custom styles for the user,'s AI Research Knowledge Base
+ * This file is copied to quartz/styles/custom.scss during build.
+ *
+ * Quartz loads this automatically — it's the designated override point.
+ */
+
+/* Improve readability of analysis/synthesis content */
+article {
+  /* Slightly wider content area for tables and long quotes */
+  max-width: 750px;
+
+  /* Better spacing for the section dividers the agents produce */
+  hr {
+    margin: 2rem 0;
+    border: none;
+    border-top: 1px solid var(--lightgray);
+  }
+
+  /* Style the collapsible metadata blocks */
+  details {
+    background: var(--highlight);
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    margin: 1rem 0;
+
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--secondary);
+    }
+  }
+
+  /* Talking point blockquotes — make them visually distinct */
+  blockquote {
+    border-left: 3px solid var(--secondary);
+    padding: 0.5rem 1rem;
+    margin: 1rem 0;
+    background: var(--highlight);
+    border-radius: 0 6px 6px 0;
+
+    strong:first-child {
+      color: var(--secondary);
+    }
+  }
+
+  /* Tables — used in topic indexes and browse-by sections */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin: 1rem 0;
+
+    th {
+      background: var(--lightgray);
+      font-weight: 600;
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+    }
+
+    td {
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--lightgray);
+    }
+
+    tr:hover td {
+      background: var(--highlight);
+    }
+  }
+}
