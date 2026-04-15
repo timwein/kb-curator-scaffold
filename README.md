@@ -16,6 +16,8 @@ All three agents share the same GitHub repo (`<your-kb-repo>` in the original se
 
 The KB grows by accretion. Topics files cross-link tweet content with blog content. Over time, the agents discover new sources beyond your seed list. The bookmarker's taste profile is regenerated from the analyses the ingestion agent writes, so every rating you give feeds forward into *what* the bookmarker picks next. You give feedback by rating analyses (`user_score: 0-10`) — the agents adjust their interest model accordingly.
 
+**Optional reader frontend.** GitHub is a poor reading surface for long-form analyses. You can deploy a Next.js reader to Vercel that gives you a private mobile-friendly reading surface, UI-based rating (commits `user_score` back to the KB so agents pick it up), and per-page chat with Claude grounded in the page content. A working reference implementation lives at [timwein/tweet-knowledge-base/reader](https://github.com/timwein/tweet-knowledge-base/tree/main/reader) — copy that `reader/` directory into your own KB repo to reuse it. See Step 7.
+
 ---
 
 ## Architecture
@@ -299,17 +301,27 @@ Six secrets on the KB repo (Settings → Secrets and variables → Actions):
 
 A `setup-secrets.py` script in this repo automates this via the GitHub API if your PAT has `Secrets: Read & write`.
 
-### Step 7: Enable GitHub Pages (optional)
+### Step 7: Deploy the reader (optional)
 
-To browse your KB as a website (not just markdown on GitHub), add Quartz:
+The KB is plain markdown on GitHub, which is great for agents and source-of-truth storage but rough for reading on mobile. A reference Next.js reader lives at [timwein/tweet-knowledge-base/reader](https://github.com/timwein/tweet-knowledge-base/tree/main/reader) — copy that directory into your KB repo, then deploy to Vercel.
 
-```bash
-cp -r quartz/ ~/my-knowledge-base/
-cp deploy-quartz.yml ~/my-knowledge-base/.github/workflows/
-cd ~/my-knowledge-base && git add -A && git commit -m "add quartz" && git push
-```
+What the reader gives you:
 
-Then enable Pages in repo Settings → Pages → Source: GitHub Actions. The site builds and deploys on every push.
+- Mobile + desktop reading with real typography, navigation, and search across every analysis
+- 0-10 rating from the UI; the reader patches `user_score:` in the page frontmatter and commits to `main`, so the agents pick up your feedback on their next run
+- Per-page chat with Claude — the full page body is prepended as system prompt so answers are grounded in the analysis. Ephemeral; nothing persisted
+
+**To deploy**:
+
+1. Copy the `reader/` directory from the reference repo into your KB repo root. Commit + push.
+2. Create a Vercel project from your KB repo. Set **Root Directory** = `reader`.
+3. Add env vars (template at `reader/.env.local.example`): `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_TOKEN` (fine-grained PAT with `contents: write` scoped only to this repo), `ANTHROPIC_API_KEY`, `GITHUB_WEBHOOK_SECRET` (random string), and either the two `CF_ACCESS_*` vars (if you're gating via Cloudflare Access) or `SKIP_ACCESS_VERIFY=true` (to defer auth).
+4. Add a GitHub webhook on your KB repo: Settings → Webhooks → Add. URL = `https://<your-vercel-host>/api/revalidate`, same secret, "Just the push event". This triggers on-demand ISR when agents commit.
+5. **(Optional)** Gate behind Cloudflare Access for private access. Requires a custom domain you own (Access can't protect `*.vercel.app` hostnames). Instructions in `reader/README.md`.
+
+**Gotcha**: Vercel Hobby refuses to deploy commits whose committer can't be associated with a GitHub user. If your agents commit as `<name>@local` or any synthetic email, change their `git config user.email` to a GitHub-verified email on your account. Also avoid `Co-Authored-By` trailers on your own commits — Hobby treats them as multi-author collaboration and blocks.
+
+The reader's verification rubric (30 pass/fail items) lives at `reader/tasks/todo.md` in the reference repo — walk it after deploy to confirm each piece works.
 
 ### Step 8: Trigger the first run
 
@@ -323,8 +335,8 @@ You'll see commits appear incrementally on `main` as the agent works through ana
 
 ### Daily workflow
 
-1. **Morning** — open the latest date folder on GitHub (`2026/04/15/`). The auto-generated `README.md` is your landing page. Read the synthesis files first; click into individual analyses for depth.
-2. **Rate what you read** — at the top of any analysis, change `user_score:` to a number 0-10. Commit (one click on GitHub mobile). The agent picks this up on its next run and adjusts its interest model.
+1. **Morning** — open the reader (if deployed per Step 7), or the latest date folder on GitHub. The daily `README.md` is your landing page; read the synthesis files first, click into individual analyses for depth.
+2. **Rate what you read** — click a 0-10 score on any analysis page in the reader, or edit `user_score:` at the top of the page on GitHub. Both paths commit back to the repo; the agent picks this up on its next run and adjusts its interest model.
 3. **Steer the agent** — open `_system/profile/feedback.md` and write free-form feedback ("more on RSI", "less governance retreads", "track 'AI-native SaaS' as a new theme"). Commit. The agent drains the inbox on the next run, updates `deltas.md`, and proceeds with the new bias.
 
 ### Monitoring
