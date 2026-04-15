@@ -1,21 +1,22 @@
 # Personal Knowledge Base — Self-Curating with Claude Managed Agents
 
-A knowledge base that **curates itself**. Two AI agents run on a schedule, pull new content matching your interests, write structured analyses, and commit everything to a date-organized GitHub repo. You give 0-10 ratings to what you read; the agents learn and improve over time.
+A knowledge base that **curates itself**. Three AI agents run on a schedule: two curate content into the KB, and a third proactively bookmarks tweets from your X feed that match your established taste. Together they form a closed loop — your interests are discovered, filtered, analyzed, and fed back into the taste model end-to-end. You give 0-10 ratings to what you read; the agents learn and improve over time.
 
-This is what powers a researcher, 's daily reading workflow — but the architecture works for any researcher, analyst, or domain expert who reads widely and wants AI to do the synthesis work.
+This is what powers a researcher's daily reading workflow — but the architecture works for any researcher, analyst, or domain expert who reads widely and wants AI to do the synthesis work.
 
 ---
 
 ## What you get
 
-Every morning, midday, and evening, scheduled cron jobs trigger two agents on Anthropic's Managed Agents infrastructure:
+Three agents running on staggered schedules, all writing into (or reading from) the same KB:
 
-- **`tweet-kb-agent`** — ingests your bookmarked tweets, writes a structured analysis per tweet, cross-references existing knowledge, and produces a per-run synthesis you can read on your phone.
+- **`tweet-bookmarker`** — scans your X Following and For You feeds **hourly from a local script** (6am–midnight), judges each candidate against your evolving taste profile via a Claude Managed Agents session, and bookmarks the ones that clearly match. Precision-over-recall: 0–10 bookmarks per run, with a confidence floor of 0.7. Runs locally because X auth needs your real browser session.
+- **`tweet-kb-agent`** — ingests your bookmarked tweets (including those placed by the bookmarker above), writes a structured analysis per tweet, cross-references existing knowledge, and produces a per-run synthesis you can read on your phone.
 - **`kb-blog-curator`** — monitors ~150 blogs/Substacks you subscribe to, hunts for new sources via web search, ranks candidates by relevance to your interests, picks the strongest, writes deep analyses, and commits them to the same KB.
 
-Both agents share the same GitHub repo (`<your-kb-repo>` in the original setup). The repo is organized **date-first** — you navigate `2026/04/15/` and see everything from that day side-by-side: blog analyses, tweet analyses, syntheses, and a daily README landing page.
+All three agents share the same GitHub repo (`<your-kb-repo>` in the original setup). The repo is organized **date-first** — you navigate `2026/04/15/` and see everything from that day side-by-side: blog analyses, tweet analyses, syntheses, and a daily README landing page.
 
-The KB grows by accretion. Topics files cross-link tweet content with blog content. Over time, the agents discover new sources beyond your seed list. You give feedback by rating analyses (`user_score: 0-10`) — the agents adjust their interest model accordingly.
+The KB grows by accretion. Topics files cross-link tweet content with blog content. Over time, the agents discover new sources beyond your seed list. The bookmarker's taste profile is regenerated from the analyses the ingestion agent writes, so every rating you give feeds forward into *what* the bookmarker picks next. You give feedback by rating analyses (`user_score: 0-10`) — the agents adjust their interest model accordingly.
 
 ---
 
@@ -23,30 +24,48 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  GitHub Actions (cron 3x daily + watchdog hourly)               │
+│  Triggers                                                       │
+│                                                                  │
+│  GitHub Actions (cloud cron, 3x daily + watchdog hourly)        │
 │    • blog-ingest.yml        → kicks off blog curator            │
 │    • cron-watchdog.yml      → catches missed runs               │
-│    • (your bookmark workflow) → kicks off tweet agent           │
-└───────────────────┬─────────────────────────────────────────────┘
-                    │  POST /v1/sessions
-                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Anthropic Managed Agents (cloud-hosted)                        │
+│    • (bookmark workflow)    → kicks off tweet ingestion agent   │
 │                                                                  │
-│  ┌─────────────────────┐         ┌──────────────────────┐       │
-│  │ tweet-kb-agent      │         │ kb-blog-curator      │       │
-│  │ (system prompt v4+) │         │ (system prompt v11+) │       │
-│  └────────┬────────────┘         └──────────┬───────────┘       │
-│           │ runs in sandboxed container      │                  │
-│           │ • git clone repo                 │                  │
-│           │ • read seeds                     │                  │
-│           │ • analyze + commit + push        │                  │
-│           │ • stop                           │                  │
-└───────────┼──────────────────────────────────┼──────────────────┘
-            │                                  │
-            └──────────────┬───────────────────┘
-                           │  git push
-                           ▼
+│  launchd / cron (local, hourly 6am-midnight — runs on laptop)   │
+│    • com.<you>.tweet-bookmarker → kicks off bookmarker          │
+└───┬────────────────────────────┬────────────────────────────────┘
+    │  POST /v1/sessions         │  Local Python + Playwright
+    ▼                            ▼
+┌───────────────────────────────────┐  ┌──────────────────────┐
+│  Anthropic Managed Agents (cloud) │  │  Your laptop         │
+│  ┌─────────────────┐ ┌──────────┐ │  │  ┌────────────────┐  │
+│  │ tweet-kb-agent  │ │kb-blog-  │ │  │  │tweet-bookmarker│  │
+│  │ (ingestion)     │ │curator   │ │  │  │(orchestrator)  │  │
+│  └────────┬────────┘ └────┬─────┘ │  │  │• scrapes feeds │  │
+│           │ git push       │      │  │  │  via Playwright│  │
+└───────────┼────────────────┼──────┘  │  │• CMA session   │  │
+            │                │         │  │  for judgment ◄┼──┼──POST /v1/sessions
+            │                │         │  │• Playwright    │  │
+            │                │         │  │  clicks bookmark│ │
+            │                │         │  └────┬───────────┘  │
+            │                │         │       │ git push     │
+            │                │         │       │ (considered  │
+            │                │         │       │  log only)   │
+            │                │         │       │              │
+            │                │         │       │        ┌─────┼──┐
+            │                │         │       │        │ x.com│  │
+            │                │         │       │        │ book-│  │
+            │                │         │       │        │ marks│  │
+            │                │         │       │        └──▲───┘  │
+            │                │         │       │           │      │
+            │                │         │       │           │ click│
+            │                │         │       │           └──────┤
+            │                │         │       │ (next tweet-kb   │
+            │                │         │       │  run picks these │
+            │                │         │       │  up via X API)   │
+            │                │         └───────┼──────────────────┘
+            │                │                 │
+            ▼                ▼                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  GitHub Repo: <your>-knowledge-base (private)                   │
 │                                                                  │
@@ -66,7 +85,11 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 │    │   ├── deltas.md                          interest model     │
 │    │   ├── feedback.md                                            │
 │    │   ├── feed_map.json                    ← RSS cache          │
-│    │   └── discovered_sources.md                                  │
+│    │   ├── discovered_sources.md                                  │
+│    │   ├── bookmark-taste-profile.md        ← bookmarker's       │
+│    │   │                                      taste doc (auto-   │
+│    │   │                                      regenerated)       │
+│    │   └── bookmark-considered.jsonl        ← bookmarker dedup   │
 │    ├── meta/                                                      │
 │    │   ├── ingested.jsonl                   ← tweet dedupe       │
 │    │   └── blogs-ingested.jsonl             ← blog dedupe        │
@@ -74,15 +97,31 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The agents run on Anthropic's cloud, the cron triggers run on GitHub's cloud, and the KB lives in your GitHub repo. **Nothing runs on your laptop** — you can shut it down, the system keeps working.
+The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully on Anthropic's cloud, triggered by GitHub Actions cron — **nothing runs on your laptop for them**. The `tweet-bookmarker` is the exception: it runs locally via launchd (or cron on Linux) because X's authenticated write APIs need cookies from your real Chrome session that can't be shared with a remote container. The bookmarker still uses a CMA session for the judgment step — only the feed scraping and bookmark clicks happen locally.
 
 ---
 
 ## The agents in detail
 
+### `tweet-bookmarker`
+
+**Trigger:** launchd (macOS) or cron (Linux), hourly 06:00–00:00 local time. 19 fire times per day; quiet window overnight.
+
+**What it does:** scrapes your X Following (chronological) and For You (algorithmic) feeds via Playwright using cookies from your real Chrome session, filters to thread roots (no retweets, no replies, no promoted), dedupes against `meta/ingested.jsonl` and `_system/profile/bookmark-considered.jsonl`, then sends the candidate list to a Claude Managed Agents session. The session reads `_system/profile/bookmark-taste-profile.md` plus a few recent analyses for grounding, judges each candidate, and calls a `bookmark_tweet(tweet_id, author, reason, confidence)` custom tool for the ones that match. The local orchestrator receives those tool calls and performs the actual X bookmark click with Playwright — the CMA container never sees your Chrome cookies. This is the "credentials host-side via custom tools" pattern from Anthropic's Managed Agents client-patterns guide.
+
+**Budget and calibration:** up to 10 bookmarks per run (hard cap, orchestrator-enforced). Confidence floor of 0.7 — calls below that are silently skipped and the agent is told why, as a calibration signal.
+
+**Outputs to the KB:**
+- `_system/profile/bookmark-considered.jsonl` — append-only log of every candidate the bookmarker has ever evaluated (bookmarked or not), so next-hour runs never re-consider the same tweet. Committed on every run that surfaces new candidates.
+- The bookmarks it places on X then flow into `tweet-kb-agent`'s ingestion queue on its next scheduled run, so the closed loop (bookmark → analyze → taste-profile refresh → next bookmark round) happens without manual intervention.
+
+**Seed for the taste profile:** generated one-time (and re-runnable monthly) by a `build_taste_profile.py` script from the corpus of past analyses in `YYYY/MM/DD/` plus topic signals from `_system/seed/`. The profile ranks favored authors by `count × avg_relevance`, lists favored topics, and surfaces calibration exemplars (high and low relevance) for the agent to anchor on.
+
+**Where the code lives:** the orchestrator, feed fetcher, Playwright bookmark-click action, and taste-profile generator live in a separate orchestrator repo (e.g., `tweet-bookmarker-agent` or similar — kept apart from the KB repo because it holds a launchd plist with API keys baked in for the local user only). Only the runtime artifacts (taste profile + considered log) live in the KB.
+
 ### `tweet-kb-agent`
 
-**Trigger:** Whenever you push a batch of bookmarked tweets to a queue file (e.g., via a Shortcut or browser extension that exports your X bookmarks). The agent processes the new tweets in the next session.
+**Trigger:** Whenever you push a batch of bookmarked tweets to a queue file (e.g., via a Shortcut or browser extension that exports your X bookmarks). The agent processes the new tweets in the next session. The `tweet-bookmarker` above also pushes bookmarks onto this queue automatically — the two agents chain.
 
 **Per-tweet output:** A markdown analysis under `YYYY/MM/DD/<tweet-id>-<author>-<slug>.md` containing:
 - TLDR (2-3 sentence thesis)
@@ -295,6 +334,7 @@ You'll see commits appear incrementally on `main` as the agent works through ana
 - **GitHub Actions tab** — see when each run fired, succeeded, or failed
 - **Run log** — `2026/MM/DD/run-log-blog-<slot>.md` for the exhaustive audit (every fetch, every query, every cache decision)
 - **Watchdog logs** — the hourly watchdog logs all dispatch decisions to its own workflow runs
+- **Bookmarker log (local)** — `tail -f /tmp/tweet-bookmarker.log` on your laptop streams every hourly bookmarker run; check `_system/profile/bookmark-considered.jsonl` on GitHub for the per-run audit of what was evaluated and the agent's reasoning per decision
 
 ### Updating the agent
 
@@ -348,7 +388,9 @@ A few principles the system depends on:
 5. **Persistent feed cache.** The agent doesn't re-probe RSS endpoints every run — it caches working feed URLs in `_system/profile/feed_map.json`. ~90% reduction in HTTP probes after the first run.
 6. **Exhaustive audit logs.** Every fetch, every query, every cache decision is one chronological line in the run log. You can answer "did the agent check $publication this morning?" with a `grep`.
 7. **Watchdog catches missed crons.** GH Actions cron is unreliable; a separate hourly watchdog detects and replays missed slots.
-8. **Topics as cross-cutting indices.** Topic files aren't just lists of paths — they're navigable mini-indexes with summaries, key analyses tables, open questions. Both agents contribute cross-references. The KB's knowledge graph emerges from this.
+8. **Topics as cross-cutting indices.** Topic files aren't just lists of paths — they're navigable mini-indexes with summaries, key analyses tables, open questions. All three agents contribute cross-references. The KB's knowledge graph emerges from this.
+9. **Hybrid local/cloud where auth forces it.** Ingestion and blog curation run fully cloud-side because their tools (git, web_fetch, web_search) don't need your personal auth. Bookmarking writes back to X, which requires your authenticated session — so the bookmarker keeps the judgment in a cloud CMA session but does the actual bookmark click locally via Playwright. Your Chrome cookies never leave your laptop. This is the "credentials host-side via custom tools" pattern from Anthropic's Managed Agents client-patterns guide — applicable any time an agent needs to act on a service whose auth is bound to a real user session (Slack, Gmail, banking, etc.).
+10. **The bookmarking agent closes the loop.** Tweets you'd never have noticed on X (scrolling burns time; bookmarks are already chosen) now surface automatically. The taste profile the bookmarker reads is derived from the analyses the ingestion agent writes, which are rated by you — so the system gradually gets better at bookmarking without any retraining step.
 
 ---
 
@@ -380,6 +422,7 @@ A few honest reflections from running this for myself:
 - **Topics files are the real KB asset.** Each topic file is a living mini-index of every analysis (from both agents) on that theme, with a summary that updates as understanding evolves. After 6 months, the topics files are how I navigate the KB — not date folders.
 - **Feedback closes the loop.** Without `user_score:`, the agent has no signal on what's actually valuable to me. With ratings flowing in daily, the agent gradually shifts its monitoring priorities, ranking criteria, and topic emphasis.
 - **Two agents > one agent.** Tweets and blogs are different content types. A tweet agent that processes batches of bookmarks works on a different cadence than a blog agent that hunts for new long-form content. Sharing the KB but keeping the agents separate keeps each one focused.
+- **Three agents > two agents — once you have ingestion working, the bottleneck shifts upstream.** With the ingestion + blog agents producing high-quality analyses, the limiting factor became *which tweets get bookmarked in the first place*. I was missing high-signal posts because I scrolled X infrequently and inconsistently. The bookmarking agent solves this by watching the feeds for me, hourly, every hour I'm awake — applying the same taste model I'd apply if I were paying attention. The 0.7 confidence floor + 10/run cap keeps the bar high enough that the ingestion agent isn't fed noise.
 
 ---
 
