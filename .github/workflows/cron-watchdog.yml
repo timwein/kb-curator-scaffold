@@ -1,0 +1,115 @@
+# Deploy to KB repo at .github/workflows/cron-watchdog.yml
+#
+# Runs every hour. Detects missed kb-blog-curator scheduled runs and dispatches
+# replacements. GitHub Actions cron is unreliable — this is the safety net.
+#
+# Logic: for each expected slot in the last 24 hours, check if a workflow run
+# exists within ±90 min of the scheduled cron time. If not, dispatch the slot.
+
+name: cron-watchdog
+
+on:
+  schedule:
+    - cron: '0 * * * *'    # hourly, on the hour
+  workflow_dispatch:        # manual trigger for testing
+
+permissions:
+  actions: write            # to dispatch missed runs
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check for missed slots and dispatch replacements
+        env:
+          GH_TOKEN: ${{ secrets.KB_REPO_PAT }}   # PAT with Actions: Write
+        run: |
+          python3 <<'PY'
+          import os, json, urllib.request, urllib.parse
+          from datetime import datetime, timedelta, timezone
+
+          REPO = "<your-username>/<your-kb-repo>"
+          WORKFLOW = "blog-ingest.yml"
+          TOKEN = os.environ["GH_TOKEN"]
+
+          HEADERS = {
+              "Authorization": f"Bearer {TOKEN}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "cron-watchdog",
+          }
+
+          def gh(method, path, body=None):
+              url = f"https://api.github.com{path}"
+              data = json.dumps(body).encode() if body else None
+              req = urllib.request.Request(url, data=data, headers={**HEADERS, "Content-Type": "application/json"}, method=method)
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  if r.status == 204:
+                      return None
+                  return json.loads(r.read())
+
+          # Slots in UTC (PDT). PST adds 1 hour but we tolerate that in the window.
+          # Each tuple: (slot_name, cron_hour_utc_pdt)
+          SLOTS = [
+              ("morning", 14),   # 07:00 PT (PDT=14, PST=15)
+              ("midday",  19),   # 12:00 PT (PDT=19, PST=20)
+              ("evening", 1),    # 18:00 PT (PDT=01 next day, PST=02 next day)
+          ]
+
+          # Window of acceptable lateness — if no run within (cron_time, cron_time + WINDOW_MIN), dispatch.
+          # GH Actions cron commonly lags 60-90 min; some runs lag 2+ hours. 180 min is safe.
+          WINDOW_MIN = 180
+
+          now = datetime.now(timezone.utc)
+          print(f"Checking missed slots as of {now.isoformat()}")
+
+          # Pull last 24h of runs
+          runs = gh("GET", f"/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?per_page=50")
+          recent = [r for r in runs["workflow_runs"]
+                    if datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) > now - timedelta(hours=24)]
+          print(f"  found {len(recent)} runs in last 24h")
+
+          # For each slot, find the most recent "expected" cron time in the past 24h
+          for slot, cron_hour in SLOTS:
+              # Build the most recent expected fire time (today or yesterday UTC)
+              today_utc = now.replace(hour=cron_hour, minute=0, second=0, microsecond=0)
+              if today_utc <= now:
+                  expected = today_utc
+              else:
+                  expected = today_utc - timedelta(days=1)
+
+              # Window: a run must exist between expected and expected + WINDOW_MIN
+              window_end = expected + timedelta(minutes=WINDOW_MIN)
+              # Only check if the window has fully closed
+              if now < window_end:
+                  print(f"  [{slot}] expected at {expected.isoformat()}, window not yet closed (ends {window_end.isoformat()}) — skipping")
+                  continue
+
+              # Did anything run for this slot in the window? Check both schedule and workflow_dispatch
+              hits = []
+              for r in recent:
+                  created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+                  if expected <= created <= window_end + timedelta(minutes=30):
+                      hits.append(r)
+
+              if hits:
+                  print(f"  [{slot}] expected at {expected.isoformat()}, found {len(hits)} run(s) — OK")
+                  continue
+
+              # Nothing fired. Also check if we already dispatched a watchdog replacement (look for any
+              # workflow_dispatch in the last 6h that's still running or recently completed).
+              # Simpler: just dispatch unconditionally — duplicate work is cheap, missed work is expensive.
+              print(f"  [{slot}] expected at {expected.isoformat()}, NO run found within window — DISPATCHING REPLACEMENT")
+
+              try:
+                  gh("POST", f"/repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches",
+                     {"ref": "main", "inputs": {"slot": slot}})
+                  print(f"  [{slot}] dispatched ✅")
+              except Exception as e:
+                  print(f"  [{slot}] dispatch FAILED: {e}")
+
+          print("watchdog check complete")
+          PY
