@@ -1,0 +1,92 @@
+# Deploy this file to the KB repo at .github/workflows/podcast-ingest.yml
+#
+# Runs the kb-podcast-curator managed agent once daily:
+#   12:30 PT → daily  (19:30 UTC during PDT / 20:30 UTC during PST)
+#
+# The cron expression is PDT-aligned (matching the current date range).
+# It will drift by 1 hour during PST (Nov–Mar). GitHub Actions cron is UTC
+# and does not understand DST. If you care about hard-locked clock times,
+# rotate this twice a year or accept the drift.
+#
+# Why 12:30 and not 12:00? The blog curator's "midday" slot runs at 12:00 PT
+# and takes 15-25 min. A 30-min offset reduces git-push race collisions
+# between the two agents (both retry with rebase, but fewer collisions keeps
+# the run logs cleaner).
+
+name: kb-podcast-curator
+
+on:
+  schedule:
+    - cron: '30 19 * * *'   # 12:30 PDT / 11:30 PST — daily
+  workflow_dispatch:       # manual trigger from the Actions tab
+    inputs:
+      slot:
+        description: 'Slot name (daily/manual)'
+        required: false
+        default: 'manual'
+
+permissions:
+  contents: write          # the managed agent pushes to this repo via its own clone;
+                           # GITHUB_TOKEN still needs write if we ever want to commit
+                           # workflow-side artifacts (not used yet)
+
+concurrency:
+  # Prevent two concurrent podcast runs from fighting git push
+  group: kb-podcast-curator
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45    # a session that takes this long is a red flag — fail fast
+
+    steps:
+      - name: Determine slot
+        id: slot
+        env:
+          TRIGGERING_CRON: ${{ github.event.schedule }}
+          DISPATCH_SLOT:   ${{ github.event.inputs.slot }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            case "$TRIGGERING_CRON" in
+              '30 19 * * *') slot=daily ;;    # 12:30 PDT / 11:30 PST
+              *)             slot=manual ;;   # unrecognized cron — shouldn't happen
+            esac
+            echo "slot=$slot (from cron '$TRIGGERING_CRON')"
+            echo "slot=$slot" >> "$GITHUB_OUTPUT"
+          else
+            echo "slot=${DISPATCH_SLOT:-manual}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout runner script
+        # We only need run-podcast-ingest.py — not the whole KB. The managed agent
+        # clones the KB itself as a session resource.
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/run-podcast-ingest.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install 'anthropic>=0.40.0'
+
+      - name: Run kb-podcast-curator session
+        env:
+          # Anthropic credentials
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          # Podcast agent + environment identifiers (from podcast-setup.py — stored as repo secrets)
+          PODCAST_AGENT_ID:       ${{ secrets.PODCAST_AGENT_ID }}
+          PODCAST_AGENT_VERSION:  ${{ secrets.PODCAST_AGENT_VERSION }}
+          PODCAST_ENV_ID:         ${{ secrets.PODCAST_ENV_ID }}
+          # Seed files — REUSED from the blog agent setup (uploaded once, shared).
+          SEED_FILE_IDS:          ${{ secrets.SEED_FILE_IDS }}
+          # KB repo — the agent clones this itself inside the session container.
+          KB_REPO_URL:            ${{ github.server_url }}/${{ github.repository }}
+          KB_REPO_TOKEN:          ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
+          SLOT:                   ${{ steps.slot.outputs.slot }}
+        run: python scripts/run-podcast-ingest.py
