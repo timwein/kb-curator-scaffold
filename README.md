@@ -120,6 +120,8 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 **What it does:** scrapes your X Following (chronological) and For You (algorithmic) feeds via Playwright using cookies from your real Chrome session, filters to thread roots (no retweets, no replies, no promoted), dedupes against `meta/ingested.jsonl` and `_system/profile/bookmark-considered.jsonl`, then sends the candidate list to a Claude Managed Agents session. The session reads `_system/profile/bookmark-taste-profile.md` plus a few recent analyses for grounding, judges each candidate, and calls a `bookmark_tweet(tweet_id, author, reason, confidence)` custom tool for the ones that match. The local orchestrator receives those tool calls and performs the actual X bookmark click with Playwright — the CMA container never sees your Chrome cookies. This is the "credentials host-side via custom tools" pattern from Anthropic's Managed Agents client-patterns guide.
 
+**URL-following for borderline decisions:** When a candidate tweet is short text + link and the agent is on the fence, it `web_fetch`es the `external_url` to read the linked article before deciding. This prevents false negatives on high-value link-share tweets where the tweet text alone gives little signal. X Articles (`is_article: true`) are recognized by the scraper and handled with elevated prior — the agent doesn't need to fetch them since the essay body isn't accessible from the candidate anyway.
+
 **Budget and calibration:** up to 10 bookmarks per run (hard cap, orchestrator-enforced). Confidence floor of 0.7 — calls below that are silently skipped and the agent is told why, as a calibration signal.
 
 **Outputs to the KB:**
@@ -133,6 +135,8 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 ### `tweet-kb-agent`
 
 **Trigger:** Whenever you push a batch of bookmarked tweets to a queue file (e.g., via a Shortcut or browser extension that exports your X bookmarks). The agent processes the new tweets in the next session. The `tweet-bookmarker` above also pushes bookmarks onto this queue automatically — the two agents chain.
+
+**URL-following:** Many high-value tweets are just a short caption + link to an article, paper, or thread. When the agent encounters a short-text tweet with an `external_url`, it automatically `web_fetch`es the linked article before writing the analysis — so the analysis is grounded in the full source content, not just the tweet caption. X Articles (longform essays posted natively to X) are handled separately: the scraper detects them via `is_article: true` and they never need a web_fetch (the full body is already provided).
 
 **Per-tweet output:** A markdown analysis under `YYYY/MM/DD/<tweet-id>-<author>-<slug>.md` containing:
 - TLDR (2-3 sentence thesis)

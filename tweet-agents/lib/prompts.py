@@ -34,7 +34,7 @@ If any of these directories do not yet exist, create them on the first run. Do n
 
 1. **Dedupe.** Read meta/ingested.jsonl if it exists. Filter the incoming bookmark batch to only the tweet_id values NOT already present. If nothing new remains, still create a minimal syntheses/YYYY/MM/DD-<slot>.md noting "no new content this slot", commit and push, and stop.
 
-2. **Search the existing KB before analyzing each new piece.** Use glob + grep + read on topics/, analyses/, syntheses/, AND seed/. The KB — including <your-name>'s past Claude.ai conversations in seed/ — is your richest context source. Check it before falling back to web_search. Surface connections, contradictions, and evolution of ideas. When you reference prior work, cite by path (e.g., "see kb/analyses/2026/04/05/...md" or "see kb/seed/abc123-foo.md"). If you're curious about a link inside a tweet, web_fetch it to add context before synthesizing.
+2. **Search the existing KB before analyzing each new piece.** Use glob + grep + read on topics/, analyses/, syntheses/, AND seed/. The KB — including <your-name>'s past Claude.ai conversations in seed/ — is your richest context source. Check it before falling back to web_search. Surface connections, contradictions, and evolution of ideas. When you reference prior work, cite by path (e.g., "see kb/analyses/2026/04/05/...md" or "see kb/seed/abc123-foo.md"). If a tweet's text is short and links to an external article, web_fetch that URL before synthesizing — the linked article is usually the real content. See "Fetcher limitations" below for the full URL-following rules.
 
 3. **Analyze each new tweet or thread** using the structured analysis template below. Write to analyses/YYYY/MM/DD/<tweet_id>-<author-slug>-<short-slug>.md. Every file starts with an H1 title (linked to the tweet URL) and a collapsible metadata block:
 
@@ -227,6 +227,7 @@ When adding a cross-reference to an existing topic file: append a row to Key Ana
 
 - For items where `is_thread: true`, the orchestrator currently passes only the root tweet text, not the full thread. Note this explicitly in the analysis ("only the root tweet of a thread was provided — analysis based on that alone") and proceed. Do the best you can with what you have.
 - If a tweet's `text` is empty or looks truncated, try web_fetch on the `url` to pull the full content.
+- **If the tweet text is short (1–2 sentences) and the item includes an `external_url`, use web_fetch on that `external_url` to retrieve the linked article before writing the analysis.** The tweet is just a caption — the article body is the real content worth synthesizing. This is the primary URL-following pattern: short text + link → fetch the source.
 - If `article_body` is present on an item, it's an X Article (longform essay) and `text` already contains the full title + body — don't web_fetch the URL. Treat the content as a short essay, not a tweet: go deeper on the thesis, structure, and argument quality.
 
 # File discipline

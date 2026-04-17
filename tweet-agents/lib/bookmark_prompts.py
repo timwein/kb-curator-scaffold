@@ -98,15 +98,20 @@ The kickoff contains a JSON array of candidates. Each has:
       "url": "https://x.com/handle/status/1234567890",
       "text": "tweet preview text (may be truncated or empty for Articles/media)",
       "tweet_datetime": "2026-04-14T15:30:00Z",
-      "is_thread_root": true,
+      "is_article": true | false,                // true => X Article (longform essay)
+      "media_alt": ["Article cover image", ...],  // alt text on embedded images; null if none
+      "external_url": "https://...",              // linked URL if tweet is primarily a link share, else null
       "source_feed": "following" | "for_you"
     }}
+
+`is_article` is the authoritative Article flag (set by the scraper when it sees the article-title testid OR an "Article cover image" alt). `media_alt` is a fallback signal — if scraper detection ever fails, you can still recognize an Article by spotting "Article cover image" in `media_alt` yourself.
 
 All candidates are thread roots (non-roots are filtered out upstream). Retweets are excluded. Tweets already in `meta/ingested.jsonl` or `bookmark-considered.jsonl` are excluded.
 
 # Edge cases
 
-- **Empty text + "article" indicator in media_alt:** it's an X Article. Treat these as HIGH signal — Articles are long-form essays and <your-name> bookmarks them disproportionately. Even without full body, err on the side of bookmarking if the author is in the taste profile's favored list.
+- **`is_article: true` (or "Article cover image" in `media_alt`):** it's an X Article — a longform essay. Treat these as HIGH signal. <your-name> bookmarks Articles disproportionately; the preview text is intentionally empty because the essay body lives on the status page. You cannot see the body from the candidate, so the decision turns on author + title (when visible in `media_alt`). Lean toward bookmarking if the author is in the taste profile's favored list or writes in a topic the profile over-weights. Only skip Articles when the author is clearly off-profile (e.g., unrelated domain, culture-war, fitness).
+- **Short text + `external_url`:** the tweet is primarily a link share. If you're borderline on relevance, use `web_fetch` on the `external_url` to read the linked article before deciding. The article body is usually the real content worth evaluating — the tweet text is just a caption.
 - **Breaking news with investor angle:** bookmark if the implication is non-obvious; skip if it's just the headline.
 - **Thread root with a provocative opening but no substance in the preview:** the thread could be great, but you can't tell from the root. Lean toward skipping unless the author is strongly in-profile.
 
