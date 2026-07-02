@@ -21,8 +21,41 @@ function getJwks() {
   return jwks;
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function verifyBasicAuth(req: NextRequest): AccessIdentity | null {
+  const user = process.env.BASIC_AUTH_USER;
+  const pass = process.env.BASIC_AUTH_PASSWORD;
+  if (!user || !pass) return null;
+  const header = req.headers.get("authorization");
+  if (!header?.startsWith("Basic ")) return null;
+  try {
+    const decoded = atob(header.slice(6).trim());
+    const sepIdx = decoded.indexOf(":");
+    if (sepIdx < 0) return null;
+    const u = decoded.slice(0, sepIdx);
+    const p = decoded.slice(sepIdx + 1);
+    if (timingSafeEqual(u, user) && timingSafeEqual(p, pass)) {
+      return { email: user, sub: `basic:${user}` };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Verifies the Cloudflare Access JWT on an API request.
+ * Verifies the request identity on an API call. Accepts either Cloudflare
+ * Access JWT (when CF_ACCESS_* is configured) or HTTP Basic Auth (when
+ * BASIC_AUTH_USER/PASSWORD is configured). Whichever gate the site is using
+ * in production, the API trusts the same credentials.
  *
  * Returns the identity on success, or null on failure (caller should 401).
  *
@@ -35,6 +68,10 @@ export async function verifyAccess(
   if (process.env.SKIP_ACCESS_VERIFY === "true") {
     return { email: "dev@local", sub: "dev-local" };
   }
+
+  const basic = verifyBasicAuth(req);
+  if (basic) return basic;
+
   const token = req.headers.get(ACCESS_HEADER);
   if (!token) return null;
   try {

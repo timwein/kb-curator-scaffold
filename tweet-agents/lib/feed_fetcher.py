@@ -26,7 +26,11 @@ A list of candidate dicts, each:
       "url": "https://x.com/handle/status/1234567890",
       "text": "preview text (may be empty for Articles)",
       "tweet_datetime": "2026-04-14T15:30:00.000Z",
-      "is_article": bool,           # heuristic: twitter-article-title present
+      "is_article": bool,           # true when media_alt contains "Article cover image"
+                                    # OR the twitter-article-title testid is present
+      "media_alt": list[str]|None,  # alt text from embedded images — carries the
+                                    # "Article cover image" signal that feed cards
+                                    # use in place of the status-page-only title testid
       "source_feed": "following" | "for_you",
     }
 
@@ -153,8 +157,31 @@ def _parse_feed_tweet(article, source_feed: str) -> dict[str, Any] | None:
         text_el = article.query_selector(TWEET_TEXT)
         text = text_el.inner_text().strip() if text_el else ""
 
-        # Article detection — the feed card for an Article shows the title.
-        is_article = article.query_selector(ARTICLE_TITLE) is not None
+        # Capture the alt text of every embedded <img>. For X Articles the
+        # feed card is usually cover-image-only, and the cover image carries
+        # the distinctive alt "Article cover image" — this is the signal we
+        # use to detect Articles in the feed (see is_article below).
+        # Mirrors lib/fetcher.py:_parse_tweet, minus the filler-alt filter,
+        # because for Articles the cover-image alt IS the filler and we need
+        # to keep it.
+        media_alts: list[str] = []
+        for img in article.query_selector_all("img[alt]") or []:
+            alt = (img.get_attribute("alt") or "").strip()
+            if alt and alt.lower() not in ("image", "", author_handle.lower()):
+                media_alts.append(alt)
+
+        # Article detection — two independent signals:
+        #   1. The twitter-article-title testid. In practice this is only
+        #      rendered on the Article's status page, not on feed cards, so
+        #      it almost never fires here. Kept for defensive coverage in
+        #      case X ever changes the feed DOM.
+        #   2. An "Article cover image" alt on any embedded <img>. This is
+        #      the reliable signal on feed cards as of 2026-04, verified
+        #      against /i/bookmarks scrapes of known Articles.
+        is_article = (
+            article.query_selector(ARTICLE_TITLE) is not None
+            or any("article cover image" in a.lower() for a in media_alts)
+        )
 
         return {
             "tweet_id": tweet_id,
@@ -163,6 +190,7 @@ def _parse_feed_tweet(article, source_feed: str) -> dict[str, Any] | None:
             "tweet_datetime": tweet_datetime,
             "text": text,
             "is_article": is_article,
+            "media_alt": media_alts or None,
             "source_feed": source_feed,
         }
     except Exception:
@@ -263,7 +291,11 @@ def _scrape_feed(
         prev_count = len(items)
 
         page.mouse.wheel(0, 2500)
-        time.sleep(1.5)
+        # 2.5s sleep (up from 1.5s) gives X time to hydrate new cards before
+        # the next query_selector_all sweep. Empirically the old 1.5s was
+        # under-sampling the feed — scraper would stall on "len == prev_count"
+        # while X was still rendering more cards below the fold.
+        time.sleep(2.5)
 
     return items
 
@@ -296,7 +328,15 @@ def fetch_feeds(
     profile_dir = Path(chrome_user_data_dir).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    per_feed_cap = max(10, max_candidates // 2)
+    # Each feed runs its own scroll+scrape up to per_feed_cap unique tweets.
+    # The final combined list is first-seen-wins deduped on tweet_id and
+    # then capped at max_candidates overall — so letting each feed aim for
+    # the full max_candidates is the cheapest way to maximize distinct
+    # candidates without changing the dedup invariant. Prior behavior
+    # (max // 2) produced 33–45 candidates per run even when the feeds had
+    # far more in reach; the owner's manual bookmarks regularly landed below
+    # that surface.
+    per_feed_cap = max(10, max_candidates)
 
     print("importing X cookies from your real Chrome...", flush=True)
     x_cookies = import_x_cookies_from_chrome()

@@ -18,12 +18,16 @@ name: kb-podcast-curator
 on:
   schedule:
     - cron: '30 19 * * *'   # 12:30 PDT / 11:30 PST — daily
-  workflow_dispatch:       # manual trigger from the Actions tab
+  workflow_dispatch:       # manual trigger from the Actions tab (or from the reader app)
     inputs:
       slot:
         description: 'Slot name (daily/manual)'
         required: false
         default: 'manual'
+      url:
+        description: 'Optional: single episode URL to analyze (listen page, transcript page, or YouTube URL). Skips discovery/ranking/synthesis.'
+        required: false
+        default: ''
 
 permissions:
   contents: write          # the managed agent pushes to this repo via its own clone;
@@ -89,4 +93,5 @@ jobs:
           KB_REPO_URL:            ${{ github.server_url }}/${{ github.repository }}
           KB_REPO_TOKEN:          ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
           SLOT:                   ${{ steps.slot.outputs.slot }}
+          SINGLE_URL:             ${{ github.event.inputs.url || '' }}
         run: python scripts/run-podcast-ingest.py

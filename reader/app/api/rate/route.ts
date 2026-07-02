@@ -125,12 +125,12 @@ export async function POST(req: NextRequest) {
           content: Buffer.from(patched.content, "utf8").toString("base64"),
           sha: getData.sha,
           committer: {
-            name: "tim-reader-app",
-            email: "tim-reader-app@users.noreply.github.com",
+            name: "the user",
+            email: "you@example.com",
           },
           author: {
-            name: "tim-reader-app",
-            email: "tim-reader-app@users.noreply.github.com",
+            name: "the user",
+            email: "you@example.com",
           },
         },
       );

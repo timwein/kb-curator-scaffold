@@ -12,7 +12,7 @@ SAFETY INVARIANT
 This function will NEVER click the `removeBookmark` testid. That button
 un-bookmarks a tweet. We only click `bookmark` (add state). If we don't
 find the add-state button, we either report "already_bookmarked" (if the
-remove-state button is present, meaning the user already bookmarked it
+remove-state button is present, meaning the owner already bookmarked it
 manually or in a prior run) or "failed" (if neither button is visible —
 could be a deleted tweet, protected account, or an X UI change).
 

@@ -9,7 +9,7 @@ Run this:
 
 Usage:
     export ANTHROPIC_API_KEY=sk-ant-...
-    python setup.py
+    python setup_tweet_ingest.py
 
 Writes the environment_id, agent_id, and agent_version into config.json.
 """
@@ -31,7 +31,7 @@ EXAMPLE_PATH = Path(__file__).parent / "config.example.json"
 
 ENVIRONMENT_NAME = "tweet-kb-environment"
 AGENT_NAME = "tweet-kb-agent"
-MODEL = "claude-opus-4-6"
+MODEL = "claude-sonnet-4-6"
 
 
 def load_or_init_config() -> dict:
@@ -117,7 +117,7 @@ def main() -> None:
     print("Next steps:")
     print("  1. Ensure GITHUB_PAT is exported (fine-grained PAT for your KB repo)")
     print("  2. Run: python -m lib.fetcher --login   (one-time X login)")
-    print("  3. Run: python run.py                   (first ingestion)")
+    print("  3. Run: python run_tweet_ingest.py                   (first ingestion)")
 
 
 if __name__ == "__main__":

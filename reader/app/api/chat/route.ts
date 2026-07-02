@@ -33,7 +33,7 @@ function validPagePath(path: string): boolean {
 }
 
 function buildSystemPrompt(title: string, body: string): string {
-  return `You are helping the user think through an analysis page in their personal knowledge base. The full page content appears below. Use it as the primary source for your answers, but you may draw on general knowledge to expand, connect, or pressure-test the argument. Be direct and concise; prefer substance over hedging.
+  return `You are helping the user think through an analysis page in his personal knowledge base. The full page content appears below. Use it as the primary source for your answers, but you may draw on general knowledge to expand, connect, or pressure-test the argument. When a question requires current information, recent events, or facts you're uncertain about, use the web_search tool and cite your sources. Be direct and concise; prefer substance over hedging.
 
 Page title: ${title}
 
@@ -41,6 +41,12 @@ Page title: ${title}
 ${body}
 ---`;
 }
+
+const WEB_SEARCH_TOOL = {
+  type: "web_search_20250305" as const,
+  name: "web_search" as const,
+  max_uses: 5,
+};
 
 function sseFormat(payload: object): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
@@ -67,7 +73,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { pagePath, messages } = body;
-  const model = body.model || "claude-opus-4-6";
+  const model = body.model || "claude-sonnet-4-6";
 
   if (!ALLOWED_MODELS.has(model)) {
     return NextResponse.json({ error: "model not allowed" }, { status: 400 });
@@ -115,11 +121,23 @@ export async function POST(req: NextRequest) {
           max_tokens: 4096,
           system,
           messages,
+          tools: [WEB_SEARCH_TOOL],
         });
         for await (const event of streamResp) {
-          if (event.type === "content_block_delta") {
-            const delta = event.delta;
-            if (delta.type === "text_delta") {
+          if (event.type === "content_block_start") {
+            const block = event.content_block as { type: string };
+            if (block.type === "server_tool_use") {
+              controller.enqueue(
+                encoder.encode(sseFormat({ type: "tool_start", tool: "web_search" })),
+              );
+            } else if (block.type === "web_search_tool_result") {
+              controller.enqueue(
+                encoder.encode(sseFormat({ type: "tool_end", tool: "web_search" })),
+              );
+            }
+          } else if (event.type === "content_block_delta") {
+            const delta = event.delta as { type: string; text?: string };
+            if (delta.type === "text_delta" && typeof delta.text === "string") {
               controller.enqueue(
                 encoder.encode(sseFormat({ type: "delta", text: delta.text })),
               );

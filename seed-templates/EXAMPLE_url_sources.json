@@ -1,0 +1,29 @@
+[
+  {
+    "url": "https://example-author.substack.com/p/some-essay-you-referenced-twice",
+    "host": "example-author.substack.com",
+    "source_type": "substack",
+    "publication": "example-author.substack.com",
+    "author": "example-author",
+    "slug": "some-essay-you-referenced-twice",
+    "count": 2
+  },
+  {
+    "url": "https://arxiv.org/abs/2501.00001",
+    "host": "arxiv.org",
+    "source_type": "arxiv",
+    "publication": "arxiv.org",
+    "author": null,
+    "slug": "2501.00001",
+    "count": 1
+  },
+  {
+    "url": "https://x.com/example_handle/status/1234567890123456789",
+    "host": "x.com",
+    "source_type": "x",
+    "publication": "x.com",
+    "author": "example_handle",
+    "slug": "1234567890123456789",
+    "count": 3
+  }
+]

@@ -23,6 +23,10 @@ on:
         description: 'Slot name (morning/midday/evening/manual)'
         required: false
         default: 'manual'
+      url:
+        description: 'Optional: single URL to analyze (skips discovery/ranking/synthesis)'
+        required: false
+        default: ''
 
 permissions:
   contents: write          # the managed agent pushes to this repo via its own clone;
@@ -42,18 +46,26 @@ jobs:
     steps:
       - name: Determine slot
         id: slot
+        env:
+          # github.event.schedule is the literal cron expression that triggered
+          # this run. It's set by GitHub at queue time, so it's correct even when
+          # the runner starts hours late (which is common during peak load).
+          # Do NOT derive the slot from `date -u +%H` — a delayed run will read
+          # the wrong hour and fall through to the default case.
+          TRIGGERING_CRON: ${{ github.event.schedule }}
+          DISPATCH_SLOT:   ${{ github.event.inputs.slot }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # Map cron hour (UTC) to slot name — covers both PDT and PST
-            case "$(date -u +%H)" in
-              14|15) slot=morning ;;   # 07:00 PT (PDT=14, PST=15)
-              19|20) slot=midday  ;;   # 12:00 PT (PDT=19, PST=20)
-              01|02) slot=evening ;;   # 18:00 PT (PDT=01, PST=02)
-              *)     slot=manual  ;;
+            case "$TRIGGERING_CRON" in
+              '0 14 * * *') slot=morning ;;   # 07:00 PDT / 06:00 PST
+              '0 19 * * *') slot=midday  ;;   # 12:00 PDT / 11:00 PST
+              '0 1 * * *')  slot=evening ;;   # 18:00 PDT / 17:00 PST
+              *)            slot=manual  ;;   # unrecognized cron — shouldn't happen
             esac
+            echo "slot=$slot (from cron '$TRIGGERING_CRON')"
             echo "slot=$slot" >> "$GITHUB_OUTPUT"
           else
-            echo "slot=${{ github.event.inputs.slot || 'manual' }}" >> "$GITHUB_OUTPUT"
+            echo "slot=${DISPATCH_SLOT:-manual}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout runner script
@@ -90,4 +102,5 @@ jobs:
           KB_REPO_URL:       ${{ github.server_url }}/${{ github.repository }}
           KB_REPO_TOKEN:     ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
           SLOT:              ${{ steps.slot.outputs.slot }}
+          SINGLE_URL:        ${{ github.event.inputs.url || '' }}
         run: python scripts/run-blog-ingest.py

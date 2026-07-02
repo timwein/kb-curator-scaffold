@@ -3,6 +3,15 @@
 These are *empty* templates showing the file shape the agents expect at
 `/workspace/seed/*` (mounted from your uploaded files).
 
+**Quick start:** copy this folder to `seed/` at the repo root (git-ignored),
+drop the `EXAMPLE_` prefixes, and personalize. Only three files are required
+to get running — `interests_seed.md`, `topic_taxonomy.md`, and
+`subscriptions.md`. The rest (`url_sources.json`, `url_sources.md`,
+`claude_messages_clean.md`) are optional taste-profile artifacts;
+`scripts/setup.py` skips them with a warning if absent, and the agents are
+told to proceed without them. Add them later via the steps below — they
+meaningfully deepen personalization.
+
 To produce real seed files for yourself:
 
 1. **Export your past Claude.ai conversations.** Use the Chrome extension's

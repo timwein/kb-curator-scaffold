@@ -1,28 +1,18 @@
 import fs from "node:fs/promises";
-import fsSync from "node:fs";
 import path from "node:path";
 import fg from "fast-glob";
 import { buildKbPage } from "./parse";
 import type { KbPage } from "./types";
 
 /**
- * Resolve the absolute filesystem path to the KB content root.
- *
- * - Preferred source: `reader/.kb-content/` (populated by `sync-content.ts`
- *   at prebuild/predev). Living inside the project root lets Vercel's file
- *   tracer pick it up for API routes at runtime.
- * - Fallback: KB_CONTENT_ROOT env var (default `../`), used by the sync
- *   script itself and for direct builds without a sync step.
+ * Always resolve to `reader/.kb-content/`, populated by `sync-content.ts` at
+ * prebuild/predev. Keeping this a single statically-analyzable path inside the
+ * project root lets Vercel's file tracer scope each function bundle to just
+ * the markdown it needs — a parent-directory fallback (e.g. `path.resolve(cwd,
+ * "../")`) defeats NFT and pulls the entire repo into every traced route.
  */
 export function resolveKbRoot(): string {
-  const cwd = process.cwd();
-  const mirrored = path.resolve(cwd, ".kb-content");
-  if (fsSync.existsSync(mirrored)) return mirrored;
-  const raw = process.env.KB_CONTENT_ROOT || "../";
-  const expanded = raw.startsWith("~/")
-    ? path.join(process.env.HOME || "", raw.slice(2))
-    : raw;
-  return path.resolve(cwd, expanded);
+  return path.resolve(process.cwd(), ".kb-content");
 }
 
 const INCLUDE_GLOBS = [

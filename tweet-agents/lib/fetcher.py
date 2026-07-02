@@ -26,10 +26,19 @@ FIRST-RUN NOTES
 - Chrome does NOT need to be closed — browser_cookie3 handles a running
   Chrome by snapshotting the cookie DB.
 
-LIMITATIONS (v1)
-----------------
-- Threads are flagged (is_thread: true) but NOT fully followed — only the
-  root tweet's text is captured. The agent is instructed to note this.
+THREAD HANDLING
+---------------
+When a bookmark is part of a self-thread (the author wrote multiple
+sequential tweets in a chain), enrich_full_text walks UP to the root
+of the thread and then crawls DOWN, collecting all same-author tweets.
+The bookmark's `text` is rewritten to the full concatenated thread
+(with a `[bookmarked tweet]` marker so downstream code knows which one
+the user actually saved), `is_thread` is set to True, and
+`thread_tweets` lists each tweet's id/url/text/datetime.
+
+Capped at 15 tweets per thread to keep agent context manageable. Stops
+crawling after 5 consecutive non-author replies (X groups self-thread
+continuations together before other replies).
 """
 
 from __future__ import annotations
@@ -174,11 +183,16 @@ def fetch_bookmarks(
         "tweet_id": str,
         "author": str,              # "@handle"
         "url": str,                 # "https://x.com/handle/status/..."
-        "text": str,
+        "text": str,                # full thread body after enrich_full_text;
+                                    # bookmarked tweet marked with "[bookmarked tweet]"
         "tweet_datetime": str,      # ISO-8601, from <time datetime>
         "media_alt": list[str]|None,
         "external_url": str|None,   # t.co outbound link (if link-share tweet)
-        "is_thread": bool,
+        "is_thread": bool,          # True after enrich_full_text if a self-thread
+                                    # was detected and >=2 same-author tweets captured
+        "thread_tweets": list|None, # populated by enrich_full_text when a thread is
+                                    # detected. Each entry: {tweet_id, url, text,
+                                    # tweet_datetime}, ordered chronologically.
       }
 
     Args:
@@ -261,10 +275,18 @@ def enrich_full_text(
     chrome_user_data_dir: str | Path,
     headless: bool = True,
     delay_seconds: float = 1.5,
+    max_thread_tweets: int = 15,
 ) -> None:
-    """Visit each bookmark's permalink and replace truncated `text` with
-    the full tweet body. Also extracts X Article (longform) content when
-    present. Mutates `bookmarks` in place.
+    """Visit each bookmark's permalink and:
+      - Replace truncated `text` with the full tweet body.
+      - Extract X Article (longform) content when present.
+      - Walk same-author self-threads: hop up to the root, then crawl down
+        collecting sequential same-author tweets. The bookmark's `text` is
+        rewritten to the full concatenated thread (with the bookmarked
+        tweet marked), `is_thread` is set True, and `thread_tweets` lists
+        each tweet in the thread in chronological order.
+
+    Mutates `bookmarks` in place.
 
     The bookmarks-page scrape only captures the preview (~280 chars) that
     X renders before "Show more". Tweet detail pages render the full body,
@@ -281,6 +303,10 @@ def enrich_full_text(
     existing scrape — a failed fetch, a shorter render, or a rate-limit
     fallback page can't lose data. Permalinks that can't be loaded are
     silently skipped; the agent's web-search backfill covers those.
+
+    `max_thread_tweets` caps the number of tweets collected per thread.
+    Default 15 keeps agent context manageable; bump for completeness if
+    your threads regularly run longer.
     """
     if not bookmarks:
         return
@@ -292,75 +318,32 @@ def enrich_full_text(
 
     enriched = 0
     skipped = 0
+    threads_found = 0
 
     with sync_playwright() as p:
         context = _launch_context(p, profile_dir, headless)
         context.add_cookies(x_cookies)
 
         for i, b in enumerate(bookmarks):
-            url = b.get("url")
             tweet_id = b.get("tweet_id", "?")
-            if not url:
-                skipped += 1
-                continue
-            page = None
             try:
-                page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_selector(TWEET_ARTICLE, timeout=10000)
-                # First <article> on a tweet detail page is the primary
-                # tweet. Replies come after; quote-tweets nest as children.
-                article = page.query_selector(TWEET_ARTICLE)
-                if article:
-                    did_enrich = False
-
-                    # Standard tweet body.
-                    text_el = article.query_selector(TWEET_TEXT)
-                    if text_el:
-                        full_text = text_el.inner_text().strip()
-                        current = b.get("text") or ""
-                        if len(full_text) > len(current):
-                            b["text"] = full_text
-                            did_enrich = True
-
-                    # X Article (longform). Rendered in a separate subtree
-                    # from tweetText — a tweet can have one, the other, or
-                    # neither (media-only). Check independently.
-                    body_el = article.query_selector(ARTICLE_BODY)
-                    if body_el:
-                        article_body = body_el.inner_text().strip()
-                        title_el = article.query_selector(ARTICLE_TITLE)
-                        article_title = (
-                            title_el.inner_text().strip() if title_el else None
-                        )
-                        if article_body:
-                            b["article_body"] = article_body
-                            b["article_title"] = article_title
-                            merged = (
-                                f"{article_title}\n\n{article_body}"
-                                if article_title
-                                else article_body
-                            )
-                            current = b.get("text") or ""
-                            if len(merged) > len(current):
-                                b["text"] = merged
-                                did_enrich = True
-
-                    if did_enrich:
-                        enriched += 1
-                    else:
-                        skipped += 1
+                focal_updated, thread_found = _enrich_one(
+                    context, b, max_thread_tweets=max_thread_tweets
+                )
+                if focal_updated:
+                    enriched += 1
                 else:
                     skipped += 1
+                if thread_found:
+                    threads_found += 1
+                    n = len(b.get("thread_tweets") or [])
+                    print(
+                        f"  thread captured for {tweet_id}: {n} tweets",
+                        flush=True,
+                    )
             except Exception as e:
                 print(f"  (enrich skipped {tweet_id}: {e})", flush=True)
                 skipped += 1
-            finally:
-                if page is not None:
-                    try:
-                        page.close()
-                    except Exception:
-                        pass
 
             # Pace requests to avoid rate-limit patterns.
             if i < len(bookmarks) - 1:
@@ -369,9 +352,273 @@ def enrich_full_text(
         context.close()
 
     print(
-        f"  enriched {enriched}, unchanged/skipped {skipped}",
+        f"  enriched {enriched}, unchanged/skipped {skipped}, "
+        f"threads found {threads_found}",
         flush=True,
     )
+
+
+def _extract_full_tweet_text(article) -> str:
+    """Read the full body of an article on a status page.
+
+    Prefers the X Article (longform) subtree when present — for those
+    tweets the standard tweetText div is empty and the essay lives in
+    twitterArticleRichTextView. Falls back to tweetText for normal tweets.
+    """
+    body_el = article.query_selector(ARTICLE_BODY)
+    if body_el:
+        article_body = body_el.inner_text().strip()
+        if article_body:
+            title_el = article.query_selector(ARTICLE_TITLE)
+            title = title_el.inner_text().strip() if title_el else None
+            return f"{title}\n\n{article_body}" if title else article_body
+
+    text_el = article.query_selector(TWEET_TEXT)
+    return text_el.inner_text().strip() if text_el else ""
+
+
+def _enrich_one(
+    context,
+    bookmark: dict[str, Any],
+    max_thread_tweets: int = 15,
+    max_walk_up_hops: int = 5,
+    max_scroll_rounds: int = 8,
+    consecutive_non_author_stop: int = 5,
+) -> tuple[bool, bool]:
+    """Enrich one bookmark in place. Returns (focal_text_updated, thread_found).
+
+    Strategy:
+      1. Open the bookmark's permalink. Extract focal full text (and X
+         Article body if present) — that's the existing enrichment.
+      2. Walk UP: if same-author tweets appear above the focal in DOM
+         order, those are thread parents. Navigate to the topmost one and
+         repeat — at most `max_walk_up_hops` times. Stops when no same-
+         author parents remain (= root reached) or we revisit a URL.
+      3. Open the root's status page and scroll down, collecting same-
+         author articles in DOM order. Stop after we hit
+         `consecutive_non_author_stop` non-author articles in a row (X
+         renders self-thread continuations contiguously before other
+         replies), `max_thread_tweets` total, or `max_scroll_rounds`
+         stalled scrolls.
+      4. If we found >1 same-author tweets including the focal, rewrite
+         the bookmark's `text` to the full concatenated thread (with a
+         [bookmarked tweet] marker), set is_thread, and attach
+         thread_tweets.
+    """
+    url = bookmark.get("url")
+    bookmark_tweet_id = bookmark.get("tweet_id")
+    author_handle_lower = (bookmark.get("author") or "").lstrip("@").lower()
+
+    if not url or not bookmark_tweet_id or not author_handle_lower:
+        return (False, False)
+
+    # --- Step 1+2: enrich focal text + walk up to root. ---
+    current_url = url
+    current_tweet_id = bookmark_tweet_id
+    visited_hops: set[str] = set()
+    root_url = url
+    root_tweet_id = bookmark_tweet_id
+    focal_text_updated = False
+
+    for hop in range(max_walk_up_hops):
+        if current_url in visited_hops:
+            break
+        visited_hops.add(current_url)
+
+        page = context.new_page()
+        try:
+            try:
+                page.goto(current_url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_selector(TWEET_ARTICLE, timeout=10000)
+            except Exception:
+                # If the first hop fails, treat it as a skipped enrichment.
+                # If a later hop fails, we've already recorded the previous
+                # hop's tweet as a candidate root; bail with that.
+                break
+
+            articles = page.query_selector_all(TWEET_ARTICLE)
+            parsed_list: list[tuple[Any, dict[str, Any]]] = []
+            for art in articles:
+                p_dict = _parse_tweet(art)
+                if p_dict:
+                    parsed_list.append((art, p_dict))
+
+            focal_idx = next(
+                (
+                    idx
+                    for idx, (_, p_dict) in enumerate(parsed_list)
+                    if p_dict["tweet_id"] == current_tweet_id
+                ),
+                None,
+            )
+            if focal_idx is None:
+                # Page didn't render the tweet we expected — bail.
+                break
+
+            # First hop is the bookmarked tweet — enrich focal text here.
+            if hop == 0:
+                focal_art, _ = parsed_list[focal_idx]
+                full_text = _extract_full_tweet_text(focal_art)
+                current_text = bookmark.get("text") or ""
+                if full_text and len(full_text) > len(current_text):
+                    bookmark["text"] = full_text
+                    focal_text_updated = True
+                # Also expose the X Article subtree fields when present,
+                # to keep parity with the legacy enrichment contract.
+                body_el = focal_art.query_selector(ARTICLE_BODY)
+                if body_el:
+                    article_body = body_el.inner_text().strip()
+                    if article_body:
+                        title_el = focal_art.query_selector(ARTICLE_TITLE)
+                        bookmark["article_body"] = article_body
+                        bookmark["article_title"] = (
+                            title_el.inner_text().strip() if title_el else None
+                        )
+
+            # Look for same-author tweets in DOM order ABOVE the focal —
+            # those are thread parents.
+            same_author_above = [
+                p_dict
+                for (_, p_dict) in parsed_list[:focal_idx]
+                if p_dict["author"].lstrip("@").lower() == author_handle_lower
+            ]
+            if not same_author_above:
+                root_url = current_url
+                root_tweet_id = current_tweet_id
+                break
+
+            # Walk to the topmost same-author parent (earliest in DOM order).
+            topmost = same_author_above[0]
+            current_url = topmost["url"]
+            current_tweet_id = topmost["tweet_id"]
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+    # --- Step 3: at root, scroll down and collect same-author tweets. ---
+    collected: dict[str, dict[str, Any]] = {}
+    page = context.new_page()
+    try:
+        try:
+            page.goto(root_url, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_selector(TWEET_ARTICLE, timeout=10000)
+        except Exception:
+            return (focal_text_updated, False)
+
+        # Brief settle for lazily-loaded replies.
+        time.sleep(1.0)
+
+        prev_collected = 0
+        stalled_rounds = 0
+        for _ in range(max_scroll_rounds):
+            articles = page.query_selector_all(TWEET_ARTICLE)
+
+            seen_root = False
+            consecutive_non_author = 0
+            stop_now = False
+
+            for art in articles:
+                p_dict = _parse_tweet(art)
+                if not p_dict:
+                    continue
+                tid = p_dict["tweet_id"]
+                same_author = (
+                    p_dict["author"].lstrip("@").lower() == author_handle_lower
+                )
+
+                if tid == root_tweet_id:
+                    seen_root = True
+                    if tid not in collected:
+                        collected[tid] = {
+                            "tweet_id": tid,
+                            "url": p_dict["url"],
+                            "text": _extract_full_tweet_text(art),
+                            "tweet_datetime": p_dict.get("tweet_datetime", ""),
+                            "author": p_dict["author"],
+                        }
+                    consecutive_non_author = 0
+                    continue
+
+                if not seen_root:
+                    # Parent context above the root — we already walked up,
+                    # so anything above root here isn't part of our thread
+                    # collection scope.
+                    continue
+
+                if same_author:
+                    if tid not in collected:
+                        collected[tid] = {
+                            "tweet_id": tid,
+                            "url": p_dict["url"],
+                            "text": _extract_full_tweet_text(art),
+                            "tweet_datetime": p_dict.get("tweet_datetime", ""),
+                            "author": p_dict["author"],
+                        }
+                    consecutive_non_author = 0
+                    if len(collected) >= max_thread_tweets:
+                        stop_now = True
+                        break
+                else:
+                    consecutive_non_author += 1
+                    if consecutive_non_author >= consecutive_non_author_stop:
+                        stop_now = True
+                        break
+
+            if stop_now:
+                break
+
+            if len(collected) == prev_collected:
+                stalled_rounds += 1
+                if stalled_rounds >= 3:
+                    break
+            else:
+                stalled_rounds = 0
+            prev_collected = len(collected)
+
+            page.mouse.wheel(0, 2500)
+            time.sleep(1.5)
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+    # Need the focal tweet present + at least one continuation to call it
+    # a thread. Otherwise leave the bookmark as a normal single-tweet enrich.
+    if bookmark_tweet_id not in collected or len(collected) <= 1:
+        return (focal_text_updated, False)
+
+    # If our step-1 focal extraction got more text than the root-page
+    # render did (focal page has the tweet expanded), prefer it.
+    focal_enriched_text = bookmark.get("text") or ""
+    if len(focal_enriched_text) > len(collected[bookmark_tweet_id]["text"]):
+        collected[bookmark_tweet_id]["text"] = focal_enriched_text
+
+    # tweet_id is a snowflake — numerically ascending == chronological.
+    thread = sorted(collected.values(), key=lambda t: int(t["tweet_id"]))
+    thread = thread[:max_thread_tweets]
+
+    parts = []
+    for t in thread:
+        if t["tweet_id"] == bookmark_tweet_id:
+            parts.append(f"[bookmarked tweet]\n{t['text']}")
+        else:
+            parts.append(t["text"])
+    bookmark["text"] = "\n\n---\n\n".join(parts)
+    bookmark["is_thread"] = True
+    bookmark["thread_tweets"] = [
+        {
+            "tweet_id": t["tweet_id"],
+            "url": t["url"],
+            "text": t["text"],
+            "tweet_datetime": t["tweet_datetime"],
+        }
+        for t in thread
+    ]
+
+    return (True, True)
 
 
 def _parse_tweet(article) -> dict[str, Any] | None:
@@ -479,10 +726,42 @@ if __name__ == "__main__":
         action="store_true",
         help="Run with a visible browser (useful for debugging)",
     )
+    parser.add_argument(
+        "--test-thread",
+        metavar="URL",
+        help="Test thread collection on a single bookmark URL — runs the "
+             "walk-to-root + crawl logic and prints the resulting bookmark "
+             "object. Skips the bookmarks-list scrape.",
+    )
     args = parser.parse_args()
 
     if args.diagnose:
         diagnose_cookies()
+    elif args.test_thread:
+        # Build a synthetic single-bookmark record from the URL so we can
+        # exercise enrich_full_text without touching /i/bookmarks.
+        m = STATUS_HREF_RE.search(args.test_thread.split("x.com", 1)[-1])
+        if not m:
+            import sys as _sys
+            _sys.exit(
+                f"Doesn't look like an x.com status URL: {args.test_thread!r}"
+            )
+        synthetic = {
+            "tweet_id": m.group(2),
+            "author": f"@{m.group(1)}",
+            "url": args.test_thread,
+            "text": "",
+            "tweet_datetime": "",
+            "media_alt": None,
+            "external_url": None,
+            "is_thread": False,
+        }
+        enrich_full_text(
+            [synthetic],
+            chrome_user_data_dir=args.profile,
+            headless=not args.no_headless,
+        )
+        print(_json.dumps(synthetic, indent=2, ensure_ascii=False))
     else:
         items = fetch_bookmarks(
             args.profile, max_items=args.max, headless=not args.no_headless

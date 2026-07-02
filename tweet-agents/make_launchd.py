@@ -1,5 +1,5 @@
 """
-One-time helper: generates a launchd plist that runs run.py at 6am, noon,
+One-time helper: generates a launchd plist that runs run_tweet_ingest.py at 6am, noon,
 and 6pm local time (PT).
 
 Usage:
@@ -49,7 +49,7 @@ def main() -> None:
     <key>ProgramArguments</key>
     <array>
         <string>{PYTHON}</string>
-        <string>{PROJECT_DIR}/run.py</string>
+        <string>{PROJECT_DIR}/run_tweet_ingest.py</string>
     </array>
 
     <key>WorkingDirectory</key>

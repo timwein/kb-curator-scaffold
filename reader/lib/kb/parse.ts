@@ -131,7 +131,7 @@ function stripLeadingHeader(text: string): string {
   return out;
 }
 
-function coerceUserScore(v: unknown): number | null {
+function coerceScore(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string") {
@@ -157,11 +157,21 @@ export function buildKbPage(repoRelPath: string, raw: string): KbPage {
     .slice(-1)[0]
     .replace(/\.md$/, "");
   const fm = parsed.frontmatter;
-  const userScore = coerceUserScore(fm["user_score"]);
-  const relevanceScore = coerceUserScore(fm["relevance_score"]);
+  const userScore = coerceScore(fm["user_score"]);
+  const relevanceScore = coerceScore(fm["relevance_score"]);
   const topics = coerceTopics(fm["topics"]);
-  const hasUserScoreField = Object.prototype.hasOwnProperty.call(fm, "user_score");
-  const canInteract = hasUserScoreField && kind !== "runlog";
+  const slot = typeof fm["slot"] === "string" ? (fm["slot"] as string) : undefined;
+
+  // Analysis kinds get chat; manual URL submissions (slot: manual) opt out of rating.
+  const ANALYSIS_KINDS: ReadonlySet<string> = new Set([
+    "blog",
+    "tweet",
+    "podcast",
+    "synthesis",
+  ]);
+  const isAnalysis = ANALYSIS_KINDS.has(kind);
+  const canChat = isAnalysis;
+  const canRate = isAnalysis && slot !== "manual";
 
   return {
     path: repoRelPath,
@@ -176,9 +186,9 @@ export function buildKbPage(repoRelPath: string, raw: string): KbPage {
     relevanceScore,
     topics,
     sourceType: typeof fm["source_type"] === "string" ? (fm["source_type"] as string) : undefined,
-    slot: typeof fm["slot"] === "string" ? (fm["slot"] as string) : undefined,
+    slot,
     body: parsed.body,
-    canRate: canInteract,
-    canChat: canInteract,
+    canRate,
+    canChat,
   };
 }

@@ -29,6 +29,10 @@ import time
 from datetime import datetime, timezone
 
 import anthropic
+from dotenv import load_dotenv
+
+# Load .env from the script's directory (no-op if file absent or vars already set)
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
 
 # --------------------------------------------------------------------------
 # Config

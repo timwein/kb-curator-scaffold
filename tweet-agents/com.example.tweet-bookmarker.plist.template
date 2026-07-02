@@ -30,33 +30,24 @@
         <string>sk-ant-...</string>
         <key>GITHUB_PAT</key>
         <string>github_pat_...</string>
+        <!-- A GitHub-verified email on your account. Used as the committer
+             email so Vercel's committer-to-GitHub-user check passes. -->
+        <key>GIT_COMMITTER_EMAIL</key>
+        <string>you@example.com</string>
     </dict>
 
-    <!-- Fire every hour from 6am through midnight local time.
-         19 entries: hours 6..23 (daytime + evening) plus hour 0 (midnight
-         at end of day). No fires between 00:00 and 06:00 so the overnight
-         window stays quiet. -->
+    <!-- Every 3 hours at :30, from 06:30 to 21:30 local time. 6 fires/day.
+         Offset from :00 so we don't collide with the tweet-kb agent (which
+         runs at 06:00 / 12:00 / 18:00 and holds the Chrome profile
+         SingletonLock). Reduced from hourly (19/day) for cost. -->
     <key>StartCalendarInterval</key>
     <array>
-        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>30</integer></dict>
     </array>
 
     <key>StandardOutPath</key>

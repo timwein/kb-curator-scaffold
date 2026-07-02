@@ -22,6 +22,7 @@ export function classifyPath(path: string): PageKind {
   if (parts[0] === "syntheses" || /-synthesis(-|\.)/.test(stem)) return "synthesis";
   if (parts[0] === "topics") return "topic";
   if (stem.startsWith("blog-")) return "blog";
+  if (stem.startsWith("podcast-")) return "podcast";
   if (/^\d+-/.test(stem)) return "tweet";
   return "other";
 }

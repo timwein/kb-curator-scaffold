@@ -9,8 +9,8 @@ interface Message {
 }
 
 const MODELS = [
-  { id: "claude-opus-4-6", label: "Opus 4.6" },
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { id: "claude-opus-4-6", label: "Opus 4.6" },
 ] as const;
 type ModelId = (typeof MODELS)[number]["id"];
 
@@ -23,8 +23,9 @@ export default function PageChat({
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [model, setModel] = useState<ModelId>("claude-opus-4-6");
+  const [model, setModel] = useState<ModelId>("claude-sonnet-4-6");
   const [streaming, setStreaming] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -39,6 +40,7 @@ export default function PageChat({
     setMessages(next);
     setInput("");
     setStreaming(true);
+    setSearching(false);
     setError(null);
 
     const ctrl = new AbortController();
@@ -81,6 +83,8 @@ export default function PageChat({
           try {
             const evt = JSON.parse(payload) as
               | { type: "delta"; text: string }
+              | { type: "tool_start"; tool: string }
+              | { type: "tool_end"; tool: string }
               | { type: "error"; message: string };
             if (evt.type === "delta") {
               setMessages((prev) => {
@@ -92,6 +96,10 @@ export default function PageChat({
                 };
                 return copy;
               });
+            } else if (evt.type === "tool_start" && evt.tool === "web_search") {
+              setSearching(true);
+            } else if (evt.type === "tool_end" && evt.tool === "web_search") {
+              setSearching(false);
             } else if (evt.type === "error") {
               setError(evt.message);
             }
@@ -106,6 +114,7 @@ export default function PageChat({
       }
     } finally {
       setStreaming(false);
+      setSearching(false);
       abortRef.current = null;
     }
   }
@@ -137,8 +146,9 @@ export default function PageChat({
       {messages.length === 0 && !streaming && (
         <p className="mb-3 text-xs text-[var(--muted)]">
           The full text of &ldquo;{pageTitle}&rdquo; is prepended as context.
-          Ask follow-ups, request clarification, or pressure-test the
-          argument. New conversation per page load — nothing is saved.
+          Claude can search the web when a question needs current info. Ask
+          follow-ups, request clarification, or pressure-test the argument.
+          New conversation per page load — nothing is saved.
         </p>
       )}
 
@@ -159,6 +169,11 @@ export default function PageChat({
               <div className="whitespace-pre-wrap leading-relaxed">
                 {m.content || (streaming && i === messages.length - 1 ? "…" : "")}
               </div>
+              {searching && i === messages.length - 1 && m.role === "assistant" && (
+                <div className="mt-2 text-xs italic text-[var(--muted)]">
+                  Searching the web…
+                </div>
+              )}
             </div>
           ))}
         </div>

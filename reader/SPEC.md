@@ -19,12 +19,12 @@ unchanged.
 
 | Layer          | Choice                                    | Why                                                                                          |
 | -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Framework      | Next.js 15 (App Router, TypeScript)       | SSG + API routes in one deploy                                                               |
+| Framework      | Next.js 15 (App Router, TypeScript)       | Sensible default; SSG + API routes in one deploy                                                |
 | Styling        | Tailwind CSS + `@tailwindcss/typography`  | Reading UI is 90% prose; `prose` class does most of the heavy lifting                        |
 | Markdown       | `next-mdx-remote` + `remark-gfm`          | Server-rendered MDX, GFM tables/footnotes, no client MD parsing                              |
 | Frontmatter    | `gray-matter` (+ custom `<details>` pre-parse) | KB frontmatter is embedded in a `<details>` block, not top-of-file YAML — see §5         |
 | Hosting        | Vercel (free/Hobby tier)                  | Auto-deploy on push, ISR, zero-config Next.js                                                |
-| Auth           | Cloudflare Access (in front of Vercel)    | One-time email PIN to the owner's email; no password, works across devices                   |
+| Auth           | Cloudflare Access (in front of Vercel)    | One-time email PIN to `you@example.com`; no password, works across devices          |
 | Chat           | `@anthropic-ai/sdk`, server-side only     | API key stays on Vercel; client never sees it                                                |
 | Rating writeback | GitHub REST API (contents endpoint) via `octokit` | Fine-grained PAT, patches single file, auto-commits `chore(rating): ...`               |
 
@@ -79,16 +79,20 @@ Vercel project config:
 
 ### 4.2 Page taxonomy (for interactive-footer eligibility)
 
-Rule: a page qualifies for rating + chat iff **it has a `user_score` field in
-its embedded frontmatter AND its filename does NOT start with `run-log-`**.
+Two separate gates:
 
-That's the cleanest test. It covers:
-- ✅ `blog-*.md` — yes
-- ✅ `<digits>-<author>-*.md` (tweet analyses) — yes
-- ✅ `*-synthesis-*.md` — yes (syntheses are rateable per agent design)
-- ❌ `run-log-*.md` — no (internal audit; hidden from nav entirely)
-- ❌ `README.md` (daily landing) — no (aggregation page)
-- ❌ `topics/*.md` — no (cross-ref surface)
+- **Chat**: available on every *analysis* page — `blog-*.md`, `podcast-*.md`,
+  `<digits>-<author>-*.md` (tweets), and `*-synthesis-*.md`. Independent of
+  any frontmatter field.
+- **Rating**: same set as chat, **minus** pages with `slot: manual` in their
+  frontmatter (the user's own URL submissions — no agent feedback loop to close).
+  When no `user_score:` line exists yet (e.g. raw tweets), the rate endpoint
+  inserts one at the bottom of the YAML block.
+
+Excluded entirely from both:
+- ❌ `run-log-*.md` (internal audit; hidden from nav)
+- ❌ `README.md` (daily landing — aggregation page)
+- ❌ `topics/*.md` (cross-ref surface)
 
 `run-log-*.md` files are excluded from listings by the same rule applied at
 nav generation time.
@@ -152,7 +156,7 @@ The regex is forgiving: tolerates missing summary, extra whitespace, trailing
 ### Typed model (`lib/kb/types.ts`)
 
 ```ts
-type PageKind = 'blog' | 'tweet' | 'synthesis' | 'daily' | 'topic' | 'runlog' | 'other';
+type PageKind = 'blog' | 'tweet' | 'podcast' | 'synthesis' | 'daily' | 'topic' | 'runlog' | 'other';
 
 interface KbPage {
   // identity
@@ -174,8 +178,8 @@ interface KbPage {
   // body
   body: string;                // markdown with the <details> block stripped
   // interactive eligibility
-  canRate: boolean;            // has `user_score` field AND kind !== 'runlog'
-  canChat: boolean;            // same condition
+  canRate: boolean;            // analysis kind AND slot !== 'manual'
+  canChat: boolean;            // analysis kind (blog, tweet, podcast, synthesis)
 }
 ```
 
@@ -244,7 +248,12 @@ At build, `lib/kb/scan.ts` walks the parent directory (`../`) from `reader/`:
   > ```
 - Streams response via Anthropic SDK (`messages.stream`), pipes to client via
   a Server-Sent Events response.
-- Model: `claude-opus-4-6` by default, `claude-sonnet-4-6` as a lower-cost
+- **Web search**: `web_search_20250305` server tool is attached (max 5 uses
+  per turn). When Claude invokes it the API emits `server_tool_use` +
+  `web_search_tool_result` content blocks — the SSE proxy translates these
+  into `tool_start` / `tool_end` events so the UI can show a "Searching the
+  web…" indicator.
+- Model: `claude-sonnet-4-6` by default, `claude-opus-4-6` as a higher-cost
   toggle in UI. Temperature 0.7. `max_tokens: 4096`.
 
 ## 7. API Architecture
@@ -267,7 +276,7 @@ Server:
 4. Locate the `user_score:` line in the embedded YAML block. Replace it with
    `user_score: <score>`. Only touch that one line.
 5. PUT back via contents API with commit message `chore(rating): user_score=<n>
-   on <path>` and author `{ name: "kb-reader-app", email: "reader@local" }`.
+   on <path>` and author `{ name: "kb-reader-app", email: "kb-reader-app@…" }`.
 6. Trigger revalidation for the page's route.
 7. Return `{ ok: true, commitSha }`.
 
@@ -280,7 +289,7 @@ Request:
 ```json
 {
   "pagePath": "2026/04/14/blog-foo.md",
-  "model": "claude-opus-4-6",
+  "model": "claude-sonnet-4-6",
   "messages": [{ "role": "user", "content": "What's the steelman here?" }]
 }
 ```
@@ -310,9 +319,10 @@ edits where we skip a full rebuild. **Phase 2** (see §9).
 
 ## 8. Security & Privacy
 
-- **Access control**: Cloudflare Access enforces email PIN to the owner's
-  email. Vercel deployment URL can be the default `*.vercel.app` or a
-  custom domain.
+- **Access control**: Cloudflare Access enforces email PIN to
+  `you@example.com`. Vercel deployment URL stays
+  `ai-research-kb.pages.dev` (we can keep this naming on Vercel too, or
+  change it).
 - **Defense in depth**: API routes independently verify the Cloudflare Access
   JWT. If Access is ever misconfigured, the API doesn't open up.
 - **Secrets**: all via Vercel env vars, never committed. `GITHUB_TOKEN` is a
@@ -422,7 +432,7 @@ pass/fail.
 
 ## 12. Resolved Decisions
 
-- **Default chat model**: `claude-opus-4-6`. Sonnet remains as a UI toggle.
+- **Default chat model**: `claude-sonnet-4-6`. Opus remains as a UI toggle.
 - **Chat logging**: NOT persisted. No writes to `_system/chat-log.jsonl`. Chat
   stays ephemeral in the browser tab.
 - **Revalidation**: GitHub webhook → `/api/revalidate` is in Phase 2 (not
