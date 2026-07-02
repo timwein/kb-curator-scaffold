@@ -4,10 +4,10 @@ This directory contains the two tweet-side managed agents:
 
 1. **`tweet-kb-agent`** (run via `run_tweet_ingest.py`) — reads your X
    bookmarks 3×/day, writes structured analyses + a synthesis into the KB.
-2. **`tweet-bookmarker`** (run via `run_bookmarker.py`) — runs hourly from
-   6am–midnight, scrapes your X feeds, judges candidates against your
-   taste profile, and places bookmarks. Those bookmarks flow into
-   `tweet-kb-agent` on its next run — the loop is closed.
+2. **`tweet-bookmarker`** (run via `run_bookmarker.py`) — runs every 3
+   hours from 6:30am–9:30pm, scrapes your X feeds, judges candidates
+   against your taste profile, and places bookmarks. Those bookmarks flow
+   into `tweet-kb-agent` on its next run — the loop is closed.
 
 Both use a Claude Managed Agents session for the reasoning step. The
 bookmarker does the actual bookmark click locally (Playwright) because X's
@@ -142,12 +142,14 @@ and writes a filled-in plist into `~/Library/LaunchAgents/`. **Edit the
 label** inside the script (`com.example.tweet-kb-agent`) to something
 under your own namespace before running.
 
-**Bookmarker (hourly, 6am–midnight).** Use the
+**Bookmarker (every 3 hours, 6:30am–9:30pm).** Use the
 `com.example.tweet-bookmarker.plist.template` in this directory as a
 starting point. Copy it to `~/Library/LaunchAgents/` under your own
-label, fill in the paths and secrets, then `launchctl load` it. The
-template fires 19 times per day (hours 0, 6, 7, …, 23) and keeps an
-overnight quiet window.
+label, fill in the paths and secrets (including `GIT_COMMITTER_EMAIL`,
+a GitHub-verified email on your account used as the committer identity),
+then `launchctl load` it. The template fires 6 times per day at :30
+past — offset from the tweet-kb agent's :00 runs so the two never fight
+over the Chrome profile lock — and keeps an overnight quiet window.
 
 **NEVER commit a filled-in plist — it contains your API keys.** Keep
 plists out of version control (the scaffold's `.gitignore` already

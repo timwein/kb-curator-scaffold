@@ -73,26 +73,66 @@ async function main() {
   const topic = buildKbPage("topics/foo.md", FIXTURE_NO_DETAILS);
   check("no details → userScore null", topic.userScore === null);
   check("no details → canRate false", topic.canRate === false);
+  check("no details → canChat false", topic.canChat === false);
   check("no details → body preserved", topic.body.includes("Just plain markdown"));
+
+  // Tweet with no user_score field still gets chat + rating (rating inserts field on write).
+  const TWEET_FIXTURE = `# [@foo: bar](https://x.com/foo/status/1)
+*@foo · 2026-04-16*
+
+<details><summary><strong>Metadata</strong></summary>
+
+\`\`\`yaml
+source_type: tweet
+tweet_id: "1"
+author: "@foo"
+url: "https://x.com/foo/status/1"
+relevance_score: 5
+\`\`\`
+
+</details>
+
+## TLDR
+body
+`;
+  const tweet = buildKbPage("2026/04/16/1-foo-bar.md", TWEET_FIXTURE);
+  check("tweet kind classified", tweet.kind === "tweet");
+  check("tweet canChat=true", tweet.canChat === true);
+  check("tweet canRate=true (even without user_score line)", tweet.canRate === true);
+
+  // Podcast classification + manual-slot exclusion.
+  const podcast = buildKbPage("2026/04/16/podcast-foo-bar.md", FIXTURE_EMPTY);
+  check("podcast kind classified", podcast.kind === "podcast");
+  check("podcast canChat=true", podcast.canChat === true);
+
+  const MANUAL_FIXTURE = FIXTURE_EMPTY.replace(
+    `topics: ["a", "b"]`,
+    `topics: ["a", "b"]\nslot: manual`,
+  );
+  const manual = buildKbPage("2026/04/16/blog-manual.md", MANUAL_FIXTURE);
+  check("manual-slot canChat=true", manual.canChat === true);
+  check("manual-slot canRate=false", manual.canRate === false);
 
   console.log("\n=== Real KB content ===");
   const pages = await scanPages();
   console.log(`Scanned ${pages.length} pages`);
   if (pages.length === 0) {
-    console.error("  ✗ scan returned 0 pages — KB_CONTENT_ROOT wrong?");
+    console.error("  ✗ scan returned 0 pages — run `tsx scripts/sync-content.ts` to populate .kb-content/");
     process.exitCode = 1;
     return;
   }
 
   let blogCount = 0;
   let tweetCount = 0;
+  let podcastCount = 0;
   let synthCount = 0;
   let runlogCount = 0;
   let topicCount = 0;
   let dailyCount = 0;
   let titleless = 0;
   let missingDate = 0;
-  let eligible = 0;
+  let rateable = 0;
+  let chatable = 0;
 
   for (const p of pages) {
     switch (p.kind) {
@@ -101,6 +141,9 @@ async function main() {
         break;
       case "tweet":
         tweetCount++;
+        break;
+      case "podcast":
+        podcastCount++;
         break;
       case "synthesis":
         synthCount++;
@@ -117,13 +160,19 @@ async function main() {
     }
     if (!p.title || p.title === "Untitled") titleless++;
     if ((p.kind === "blog" || p.kind === "tweet") && !p.date) missingDate++;
-    if (p.canRate) eligible++;
+    if (p.canRate) rateable++;
+    if (p.canChat) chatable++;
   }
 
-  console.log(`  blog=${blogCount} tweet=${tweetCount} synth=${synthCount} runlog=${runlogCount} topic=${topicCount} daily=${dailyCount}`);
-  console.log(`  eligible for rating/chat: ${eligible}`);
-  check(`no runlog pages are eligible`, pages.filter((p) => p.kind === "runlog" && p.canRate).length === 0);
-  check(`at least one blog has a parsed user_score field`, pages.some((p) => p.kind === "blog" && p.canRate));
+  console.log(`  blog=${blogCount} tweet=${tweetCount} podcast=${podcastCount} synth=${synthCount} runlog=${runlogCount} topic=${topicCount} daily=${dailyCount}`);
+  console.log(`  rateable=${rateable} chatable=${chatable}`);
+  check(`no runlog pages rateable`, pages.filter((p) => p.kind === "runlog" && p.canRate).length === 0);
+  check(`no runlog pages chatable`, pages.filter((p) => p.kind === "runlog" && p.canChat).length === 0);
+  check(`no topic pages chatable`, pages.filter((p) => p.kind === "topic" && p.canChat).length === 0);
+  check(`at least one blog rateable`, pages.some((p) => p.kind === "blog" && p.canRate));
+  check(`all tweets chatable`, pages.filter((p) => p.kind === "tweet" && !p.canChat).length === 0);
+  check(`all podcasts chatable`, pages.filter((p) => p.kind === "podcast" && !p.canChat).length === 0);
+  check(`manual-slot pages are NOT rateable`, pages.filter((p) => p.slot === "manual" && p.canRate).length === 0);
   check(`title extraction rate`, titleless < pages.length * 0.1, `${titleless} pages untitled`);
   check(`dated pages have dates`, missingDate === 0, `${missingDate} dated pages missing date`);
 

@@ -109,7 +109,7 @@ def render_seed_markdown(conv: dict) -> str:
 
     for msg in conv.get("chat_messages", []) or []:
         sender = msg.get("sender", "unknown")
-        role = "the user" if sender == "human" else "Claude" if sender == "assistant" else sender
+        role = "the owner" if sender == "human" else "Claude" if sender == "assistant" else sender
         parts: list[str] = []
         for block in msg.get("content", []) or []:
             if block.get("type") == "text":

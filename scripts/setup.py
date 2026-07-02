@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 import anthropic
 from dotenv import dotenv_values, set_key
@@ -34,14 +37,22 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 ENV_FILE = PROJECT_ROOT / ".env"
 SYSTEM_PROMPT_FILE = PROJECT_ROOT / "agents" / "kb-blog-curator.system.md"
 
+MODEL = "claude-sonnet-4-6"
+
 # The authoritative seed files live in the lowercase folder — topic_taxonomy.md
 # and url_sources.py only exist there, so use it as canonical.
-SEED_DIR = Path("<seed-dir>")
+SEED_DIR = Path(os.environ.get("SEED_DIR", str(PROJECT_ROOT / "seed")))
 
 SEED_FILES = [
     ("subscriptions.md",         "text/markdown"),   # PRIMARY — current newsletter subs, topic-tagged
-    ("interests_seed.md", "text/markdown"),
+    ("interests_seed.md",        "text/markdown"),
     ("topic_taxonomy.md",        "text/markdown"),
+]
+
+# Optional taste-profile artifacts. These deepen personalization but aren't
+# required to get running — generate them later with
+# tweet-agents/seed_from_claude_export.py and tweet-agents/build_taste_profile.py.
+OPTIONAL_SEED_FILES = [
     ("url_sources.json",         "application/json"),
     ("url_sources.md",           "text/markdown"),
     ("claude_messages_clean.md", "text/markdown"),
@@ -72,7 +83,23 @@ def upload_seed_files(client: anthropic.Anthropic) -> dict[str, str]:
     for name, _ in SEED_FILES:
         path = SEED_DIR / name
         if not path.exists():
-            raise FileNotFoundError(f"Seed file missing: {path}")
+            raise FileNotFoundError(
+                f"Seed file missing: {path}\n"
+                "Copy seed-templates/ to seed/, drop the EXAMPLE_ prefixes, and personalize."
+            )
+        print(f"  uploading {name} ({path.stat().st_size:,} bytes)...", flush=True)
+        with path.open("rb") as f:
+            uploaded = client.beta.files.upload(file=f)
+        print(f"    → {uploaded.id}")
+        file_ids[name] = uploaded.id
+    for name, _ in OPTIONAL_SEED_FILES:
+        path = SEED_DIR / name
+        if name == "url_sources.py" and not path.exists():
+            # The canonical URL-cleaning module ships with the scaffold.
+            path = PROJECT_ROOT / "scripts" / "url_sources.py"
+        if not path.exists():
+            print(f"  (skipping optional seed file {name} — not found in {SEED_DIR})")
+            continue
         print(f"  uploading {name} ({path.stat().st_size:,} bytes)...", flush=True)
         with path.open("rb") as f:
             uploaded = client.beta.files.upload(file=f)
@@ -96,7 +123,7 @@ def create_agent(client: anthropic.Anthropic, system_prompt: str) -> tuple[str, 
     agent = client.beta.agents.create(
         name="kb-blog-curator",
         description="Scheduled curator for long-form blog and Substack content. Writes structured analyses to <your-username>/<your-kb-repo>.",
-        model="claude-opus-4-6",
+        model=MODEL,
         system=system_prompt,
         tools=[
             {
@@ -120,6 +147,7 @@ def update_agent(client: anthropic.Anthropic, agent_id: str, system_prompt: str,
     updated = client.beta.agents.update(
         agent_id,
         version=int(current_version),
+        model=MODEL,
         system=system_prompt,
         tools=[
             {
@@ -132,6 +160,49 @@ def update_agent(client: anthropic.Anthropic, agent_id: str, system_prompt: str,
         ],
     )
     return str(updated.version)
+
+
+def sync_github_agent_version_secret(new_version: str, kb_repo_url: str | None) -> None:
+    """Best-effort: push AGENT_VERSION=<new_version> to the KB repo's Actions secrets.
+
+    Uses the `gh` CLI (must be on PATH) and GITHUB_PAT / GH_TOKEN from env.
+    On any failure, prints manual-fix instructions and returns — never raises.
+    """
+    if not kb_repo_url:
+        print("  (skip GH secret sync: KB_REPO_URL not set in .env)")
+        return
+
+    # Parse "https://github.com/owner/repo" or "https://github.com/owner/repo.git"
+    parsed = urlparse(kb_repo_url)
+    path = parsed.path.strip("/").removesuffix(".git")
+    if parsed.netloc != "github.com" or path.count("/") != 1:
+        print(f"  (skip GH secret sync: can't parse owner/repo from KB_REPO_URL={kb_repo_url})")
+        return
+    repo = path  # "owner/repo"
+
+    if not shutil.which("gh"):
+        print("  (skip GH secret sync: `gh` CLI not installed — run: "
+              f"gh secret set AGENT_VERSION --repo {repo} --body {new_version})")
+        return
+
+    token = os.environ.get("GITHUB_PAT") or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("  (skip GH secret sync: no GITHUB_PAT/GH_TOKEN in env — run: "
+              f"gh secret set AGENT_VERSION --repo {repo} --body {new_version})")
+        return
+
+    try:
+        subprocess.run(
+            ["gh", "secret", "set", "AGENT_VERSION", "--repo", repo, "--body", new_version],
+            env={**os.environ, "GH_TOKEN": token},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        print(f"  → synced AGENT_VERSION={new_version} to GH secrets on {repo}")
+    except subprocess.CalledProcessError as e:
+        print(f"  ! GH secret sync failed (exit {e.returncode}): {e.stderr.strip() or e.stdout.strip()}")
+        print(f"    Fix manually: gh secret set AGENT_VERSION --repo {repo} --body {new_version}")
 
 
 # --------------------------------------------------------------------------
@@ -160,7 +231,8 @@ def main() -> None:
         new_version = update_agent(client, agent_id, system_prompt, current_version)
         save_env_key("AGENT_VERSION", new_version)
         print(f"✓ Agent updated to version {new_version}")
-        print("\nDon't forget to update the AGENT_VERSION secret in GitHub Actions too.")
+        print("Syncing AGENT_VERSION to GitHub Actions secrets...")
+        sync_github_agent_version_secret(new_version, env.get("KB_REPO_URL"))
         return
 
     # -------- Fresh setup --------

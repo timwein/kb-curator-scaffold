@@ -1,6 +1,7 @@
 export type PageKind =
   | "blog"
   | "tweet"
+  | "podcast"
   | "synthesis"
   | "daily"
   | "topic"

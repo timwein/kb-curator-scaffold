@@ -8,24 +8,19 @@ import PageShell from "@/components/layout/PageShell";
 import MetaRail from "@/components/meta/MetaRail";
 import InteractivePanel from "@/components/interactive/InteractivePanel";
 
-export const dynamic = "force-static";
+// Render on demand and cache the response indefinitely; the existing
+// /api/revalidate endpoint busts the cache when content changes. This avoids
+// emitting per-route .func segment artifacts at build time, which previously
+// scaled with content count and exhausted Vercel's build disk (ENOSPC at
+// ~12 GB output). Build output now stays roughly constant regardless of how
+// much KB content lives in the repo.
+export const revalidate = false;
 
 interface Params {
   yyyy: string;
   mm: string;
   dd: string;
   slug: string;
-}
-
-export async function generateStaticParams() {
-  const manifest = await loadManifest();
-  const params: Params[] = [];
-  for (const p of manifest) {
-    if (!p.date || p.kind === "runlog" || p.kind === "daily") continue;
-    const [yyyy, mm, dd] = p.date.split("-");
-    params.push({ yyyy, mm, dd, slug: p.slug });
-  }
-  return params;
 }
 
 /**
@@ -98,13 +93,13 @@ export default async function PageView({
 
       <div className="prose dark:prose-invert max-w-none">{content}</div>
 
-      {page.canRate && (
-        <InteractivePanel
-          pagePath={page.path}
-          initialScore={page.userScore}
-          pageTitle={page.title}
-        />
-      )}
+      <InteractivePanel
+        pagePath={page.path}
+        initialScore={page.userScore}
+        pageTitle={page.title}
+        canRate={page.canRate}
+        canChat={page.canChat}
+      />
     </PageShell>
   );
 }

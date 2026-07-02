@@ -4,20 +4,46 @@ A knowledge base that **curates itself**. Four AI agents run on a schedule: thre
 
 ---
 
+## Quickstart
+
+The shortest path from clone to a running system:
+
+```bash
+git clone https://github.com/timwein/kb-curator-scaffold
+cd kb-curator-scaffold
+
+# 1. Secrets: an Anthropic API key + a GitHub fine-grained PAT
+cp .env.example .env        # fill in ANTHROPIC_API_KEY, GITHUB_PAT, KB_REPO_URL
+
+# 2. Seed files: who you are, what you read
+cp -r seed-templates seed   # drop the EXAMPLE_ prefixes, personalize the 3 files
+
+# 3. Create the cloud agents
+pip install -r scripts/requirements.txt
+python3 scripts/setup.py            # blog agent (uploads seeds, writes IDs to .env)
+python3 scripts/podcast-setup.py    # podcast agent (reuses the same seeds)
+
+# 4. Deploy the workflows + secrets into your KB repo (Steps 5-6 below)
+```
+
+That gets the two cloud agents (blog + podcast) running on GitHub Actions cron. The two tweet agents run locally on a Mac (X auth needs your real Chrome session) — see [`tweet-agents/SETUP.md`](./tweet-agents/SETUP.md). The Vercel reader is optional and comes last (Step 8).
+
+---
+
 ## What you get
 
 Four agents running on staggered schedules, all writing into (or reading from) the same KB:
 
-- **`tweet-bookmarker`** — scans your X Following and For You feeds **hourly from a local script** (6am–midnight), judges each candidate against your evolving taste profile via a Claude Managed Agents session, and bookmarks the ones that clearly match. Precision-over-recall: 0–10 bookmarks per run, with a confidence floor of 0.7. Runs locally because X auth needs your real browser session.
+- **`tweet-bookmarker`** — scans your X Following and For You feeds **every 3 hours from a local script** (6:30am–9:30pm), judges each candidate against your evolving taste profile via a Claude Managed Agents session, and bookmarks the ones that clearly match. Precision-over-recall: 0–10 bookmarks per run, with a confidence floor of 0.7. Runs locally because X auth needs your real browser session.
 - **`tweet-kb-agent`** — ingests your bookmarked tweets (including those placed by the bookmarker above), writes a structured analysis per tweet, cross-references existing knowledge, and produces a per-run synthesis you can read on your phone.
 - **`kb-blog-curator`** — monitors ~150 blogs/Substacks you subscribe to, hunts for new sources via web search, ranks candidates by relevance to your interests, picks the strongest, writes deep analyses, and commits them to the same KB.
 - **`kb-podcast-curator`** — once daily, discovers podcast interview episodes relevant to your interests (via host/guest inversion from your url_sources, topic-driven web_search, and a pinned-shows list), retrieves transcripts (official → YouTube auto-captions → show-notes fallback), ranks them, and writes deep analyses of the strongest 0–3. Mirrors the blog agent's pipeline but targets long-form conversations instead of written content.
 
-All three agents share the same GitHub repo (`<your-kb-repo>` in the original setup). The repo is organized **date-first** — you navigate `2026/04/15/` and see everything from that day side-by-side: blog analyses, tweet analyses, syntheses, and a daily README landing page.
+All four agents share the same GitHub repo (`<your-kb-repo>` in the original setup). The repo is organized **date-first** — you navigate `2026/04/15/` and see everything from that day side-by-side: blog analyses, tweet analyses, syntheses, and a daily README landing page.
 
 The KB grows by accretion. Topics files cross-link tweet content with blog content. Over time, the agents discover new sources beyond your seed list. The bookmarker's taste profile is regenerated from the analyses the ingestion agent writes, so every rating you give feeds forward into *what* the bookmarker picks next. You give feedback by rating analyses (`user_score: 0-10`) — the agents adjust their interest model accordingly.
 
-**Optional reader frontend.** GitHub is a poor reading surface for long-form analyses. You can deploy a Next.js reader to Vercel that gives you a private mobile-friendly reading surface, UI-based rating (commits `user_score` back to the KB so agents pick it up), and per-page chat with Claude grounded in the page content. The full reader lives in [`reader/`](./reader) in this repo — copy that directory into your own KB repo and deploy. See Step 7.
+**Optional reader frontend.** GitHub is a poor reading surface for long-form analyses. You can deploy a Next.js reader to Vercel that gives you a private mobile-friendly reading surface, UI-based rating (commits `user_score` back to the KB so agents pick it up), per-page chat with Claude grounded in the page content, cross-device read-state tracking (Upstash Redis), and an **admin analyze page** — paste any article URL from your phone and it dispatches a single-URL agent run against it. The full reader lives in [`reader/`](./reader) in this repo — copy that directory into your own KB repo and deploy. See Step 8.
 
 ---
 
@@ -34,7 +60,7 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 │    • cron-watchdog.yml      → catches missed runs (both)        │
 │    • (bookmark workflow)    → kicks off tweet ingestion agent   │
 │                                                                  │
-│  launchd / cron (local, hourly 6am-midnight — runs on laptop)   │
+│  launchd / cron (local, every 3h 6:30am-9:30pm — runs on laptop)│
 │    • com.<you>.tweet-bookmarker → kicks off bookmarker          │
 └───┬────────────────────────────┬────────────────────────────────┘
     │  POST /v1/sessions         │  Local Python + Playwright
@@ -82,7 +108,7 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 │            ├── podcast-synthesis-daily.md   ← podcast digest     │
 │            ├── <tweet-id>-<author>-<slug>.md ← tweet analyses    │
 │            ├── tweet-synthesis-morning.md   ← tweet digest       │
-│            └── run-log-blog-morning.md      ← exhaustive audit   │
+│            └── run-log-tweet-morning.md     ← tweet run log      │
 │  topics/                                                         │
 │    └── <topic-slug>.md                      ← cross-cutting refs │
 │  _system/                                                        │
@@ -104,6 +130,10 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 │    │   ├── ingested.jsonl                   ← tweet dedupe       │
 │    │   ├── blogs-ingested.jsonl             ← blog dedupe        │
 │    │   └── podcasts-ingested.jsonl          ← podcast dedupe     │
+│    ├── logs/                                ← one JSONL line per │
+│    │   ├── blog.jsonl                          run, per agent    │
+│    │   ├── podcast.jsonl                                          │
+│    │   └── tweet.jsonl                                            │
 │    └── seed/                                ← your interest seed │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -116,7 +146,7 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 ### `tweet-bookmarker`
 
-**Trigger:** launchd (macOS) or cron (Linux), hourly 06:00–00:00 local time. 19 fire times per day; quiet window overnight.
+**Trigger:** launchd (macOS) or cron (Linux), every 3 hours 06:30–21:30 local time. 6 fire times per day at :30 past (offset from the tweet-kb agent's :00 runs so the two never fight over the Chrome profile lock); quiet window overnight.
 
 **What it does:** scrapes your X Following (chronological) and For You (algorithmic) feeds via Playwright using cookies from your real Chrome session, filters to thread roots (no retweets, no replies, no promoted), dedupes against `meta/ingested.jsonl` and `_system/profile/bookmark-considered.jsonl`, then sends the candidate list to a Claude Managed Agents session. The session reads `_system/profile/bookmark-taste-profile.md` plus a few recent analyses for grounding, judges each candidate, and calls a `bookmark_tweet(tweet_id, author, reason, confidence)` custom tool for the ones that match. The local orchestrator receives those tool calls and performs the actual X bookmark click with Playwright — the CMA container never sees your Chrome cookies. This is the "credentials host-side via custom tools" pattern from Anthropic's Managed Agents client-patterns guide.
 
@@ -134,19 +164,25 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 ### `tweet-kb-agent`
 
-**Trigger:** Whenever you push a batch of bookmarked tweets to a queue file (e.g., via a Shortcut or browser extension that exports your X bookmarks). The agent processes the new tweets in the next session. The `tweet-bookmarker` above also pushes bookmarks onto this queue automatically — the two agents chain.
+**Trigger:** launchd (macOS) or cron (Linux), 3×/day (06:00 / 12:00 / 18:00 local). Each run scrapes your current X bookmarks via a persistent-profile Playwright Chromium, dedupes against `_system/meta/ingested.jsonl`, and hands the new ones to a Managed Agent session. The `tweet-bookmarker` above feeds this queue automatically — the two agents chain.
 
 **URL-following:** Many high-value tweets are just a short caption + link to an article, paper, or thread. When the agent encounters a short-text tweet with an `external_url`, it automatically `web_fetch`es the linked article before writing the analysis — so the analysis is grounded in the full source content, not just the tweet caption. X Articles (longform essays posted natively to X) are handled separately: the scraper detects them via `is_article: true` and they never need a web_fetch (the full body is already provided).
 
-**Per-tweet output:** A markdown analysis under `YYYY/MM/DD/<tweet-id>-<author>-<slug>.md` containing:
-- TLDR (2-3 sentence thesis)
-- What's New / Non-Obvious
+**Self-thread walking:** When a bookmarked tweet is the root (or any node) of an author's own thread, the fetcher walks the full self-thread and ships every tweet in it to the agent — so an essay the author spread across 14 tweets is analyzed as one piece, not a fragment.
+
+**Per-tweet output:** A markdown analysis under `YYYY/MM/DD/<tweet-id>-<author>-<slug>.md`. The analysis template was substantially upgraded over months of daily use; the current mandatory sections are:
+- TLDR (bold one-sentence thesis, then 1-2 sentences)
+- Source & Overview — descriptive summary with key entities glossed and 2-3 verbatim pulls, so you can check the interpretation against the source
+- **Author Background & Bias** — the agent `web_search`es the author, covers role/incentives/track record/ideological priors, and ends with a one-sentence **bias vector** ("Founder of an agent-eval startup — incentive to argue evals are underrated.")
+- What's New / Non-Obvious — with the novelty classified as new claim / new evidence / new synthesis
 - Counterintuitive Claims
-- Steelman + Steelman Rebuttal
-- Forward-Looking Hypotheses
+- Steelman + Steelman Rebuttal (the rebuttal explicitly connects to the bias vector)
+- Forward-Looking Hypotheses — every prediction confidence-tagged (`high`/`medium`/`low`/`speculative`) with a time horizon
 - Technical Insights, Key Assumptions, Second-Order Implications
-- "My Take" — the agent's honest assessment
-- 3-5 talking points for professional calls / X posts / founder chats
+- Perspectives & Contradictions — for 9-10 relevance threads/X Articles: the argument run through Practitioner / Skeptic / Economist lenses plus a contradiction map
+- "My Take" — must end with a **Verdict:** line and a specific **So what:** action
+- What Would Change My Mind — 2-4 concrete, observable falsifiers with time horizons
+- 3-5 talking points for professional calls / X posts / founder chats, as blockquotes
 
 **Cross-references:** For each tweet, the agent searches the existing KB (topics, prior analyses, seeded conversations) and links related work. New themes spawn new topic files.
 
@@ -169,7 +205,7 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 7. **Analyze each winner** — `web_fetch` the article, write a structured analysis (same template as tweet analyses, plus a `relevance_score` and blank `user_score:` for your rating), update topic cross-references, commit and push **incrementally** (each analysis is its own atomic commit so a session crash doesn't lose work)
 8. **Synthesize + index** — write the per-run digest, generate the daily landing page README
 
-**Audit log:** Every fetch, every search query, every cache decision is logged chronologically to `YYYY/MM/DD/run-log-blog-<slot>.md`. You can `grep <publication>` to see every attempt the agent made against any source on any day.
+**Run log:** One JSON line per run appended to `_system/logs/blog.jsonl` (slot, counts, candidates considered, errors). Earlier versions wrote an exhaustive per-run markdown audit log; that was cut for cost — the synthesis plus the JSONL line is enough to debug with.
 
 ### `kb-podcast-curator`
 
@@ -179,10 +215,10 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 1. **Load profile** — same seed files as the blog agent (shared `SEED_FILE_IDS` — the podcast agent reuses the blog agent's Files API uploads), plus the podcast agent's own evolving deltas at `_system/profile-podcast/deltas.md`.
 2. **Drain feedback inbox** — `_system/profile-podcast/feedback.md` (separate from the blog agent's).
-3. **Passive learning** — scan recent commits for `user_score:` ratings Tim added to podcast analyses since the last run; update deltas based on calibration gaps.
+3. **Passive learning** — scan recent commits for `user_score:` ratings you added to podcast analyses since the last run; update deltas based on calibration gaps.
 4. **Discovery (two co-equal legs):**
-   - **Tier 0 pinned shows** (`_system/profile-podcast/pinned_shows.md`) — a starter list of ~10 transcript-friendly AI/VC podcasts (Dwarkesh, Lex Fridman, Latent Space, Lenny's, Cognitive Revolution, 20VC, a16z, Sequoia Training Data, AI & I, TED AI Show) is seeded on first run. Tim edits over time.
-   - **New show hunt** — 8–12 `web_search` queries across topic-driven queries, **host/guest inversion** (for the top 10 authors by `total_count` in `url_sources.json`, search `"<name>" podcast interview 2026 transcript` — authors Tim has referenced repeatedly in writing often give podcast interviews on the same theses), site-scoped queries against pinned shows, and "what's new" sweeps.
+   - **Tier 0 pinned shows** (`_system/profile-podcast/pinned_shows.md`) — a starter list of ~10 transcript-friendly AI/VC podcasts (Dwarkesh, Lex Fridman, Latent Space, Lenny's, Cognitive Revolution, 20VC, a16z, Sequoia Training Data, AI & I, TED AI Show) is seeded on first run. You edit it over time.
+   - **New show hunt** — 8–12 `web_search` queries across topic-driven queries, **host/guest inversion** (for the top 10 authors by `total_count` in `url_sources.json`, search `"<name>" podcast interview 2026 transcript` — authors you've referenced repeatedly in writing often give podcast interviews on the same theses), site-scoped queries against pinned shows, and "what's new" sweeps.
 5. **Transcript retrieval (per candidate)** — fallback chain: **official transcript → YouTube auto-captions → substantial show notes → skip**. Every attempt is logged. YouTube captions get a `-1` relevance downgrade; show notes get `-2`.
 6. **Rank + cap** — score each candidate 1–10 with extra weight for guest-signal (guest appears in `url_sources.json`) and transcript quality. Keep everything scored 8 or above, **max 3 per run** (stricter than blog because transcripts are 15–40k words and each analysis is meaningfully more expensive).
 7. **Analyze each winner** — write a structured analysis (same template as blog + a `## Direct Quotes` section capturing verbatim excerpts from the conversation, since podcasts preserve conversational texture), update topic cross-references, commit and push **incrementally**.
@@ -190,11 +226,11 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 **Zero-analyses runs are legitimate.** If nothing from today's discovery clears the score-8 bar, the synthesis says "no episodes met the quality bar today" and the run ends. No backfilling with mediocre picks.
 
-**Audit log:** Same exhaustive-audit pattern as the blog agent — `YYYY/MM/DD/run-log-podcast-daily.md` logs every show probed, every `web_search` issued, every transcript attempt with its HTTP status and character count, every candidate considered and why it was selected or skipped.
+**Run log:** Same one-line-JSONL pattern as the blog agent — `_system/logs/podcast.jsonl` gets one line per run (episodes considered, transcript sources attempted, analyses written).
 
 **Dedupe:** Per-episode dedupe via `_system/meta/podcasts-ingested.jsonl` — separate from the blog agent's `blogs-ingested.jsonl` so the two agents never collide.
 
-**Single-URL mode (optional):** If you deploy the reader frontend (Step 8) and it dispatches `podcast-ingest.yml` with a `url` input, the agent bypasses discovery and analyzes just that one episode. Same pattern as the blog agent's reader-app hook; enable by adding a `url` workflow_dispatch input and reading `SINGLE_URL` in `podcast-run.py` (scaffold version ships without this to match the blog agent's minimal pattern).
+**Single-URL mode:** Both `blog-ingest.yml` and `podcast-ingest.yml` accept an optional `url` input on manual dispatch. When set, the runtime passes `SINGLE_URL` to the session and the agent bypasses discovery/ranking/synthesis to analyze just that one piece (article URL for the blog agent; listen page, transcript page, or YouTube URL for the podcast agent). The reader's admin analyze page (Step 8) dispatches exactly this — paste a URL on your phone, get an analysis in the KB ~15 minutes later.
 
 ---
 
@@ -269,15 +305,19 @@ git add -A && git commit -m "init" && git push -u origin main
 
 ### Step 2: Prepare your seed files
 
-Put your seed files in a local folder (e.g., `~/kb-setup/seed/`):
+Copy `seed-templates/` to `seed/` at the repo root (git-ignored), drop the `EXAMPLE_` prefixes, and personalize. Three files are **required**:
 
-- `interests.md` — your 1-page interest profile
+- `interests_seed.md` — your 1-page interest profile
 - `topic_taxonomy.md` — distilled topics with evolution
-- `url_sources.json` — extracted URL corpus (run `url_sources.py` on your Claude export)
 - `subscriptions.md` — your active newsletter list
-- `claude_messages_clean.md` — your Claude conversation export
 
-The `url_sources.py` script and a recommended seed file structure live in this repo for reference.
+Four more are **optional** taste-profile artifacts that deepen personalization (setup skips them with a warning if absent — add them later once the system is running):
+
+- `url_sources.json` / `url_sources.md` — extracted URL corpus (run `scripts/url_sources.py` on your Claude export)
+- `claude_messages_clean.md` — your Claude conversation export (see "How the KB was seeded")
+- `url_sources.py` — auto-filled from `scripts/` if not present in `seed/`
+
+A different seed folder can be pointed at via the `SEED_DIR` env var.
 
 ### Step 3: Write the agent system prompts
 
@@ -293,17 +333,17 @@ All prompts are reproduced in this repo. **Adapt them to your KB's specifics** �
 
 ```bash
 git clone <this repo>
-cd Blog-ingestion-agent
-pip install 'anthropic>=0.94.0' python-dotenv PyNaCl httpx
+cd kb-curator-scaffold
+pip install -r scripts/requirements.txt
 
-export ANTHROPIC_API_KEY=sk-ant-...
-export GITHUB_PAT=github_pat_...   # the fine-grained PAT from prerequisites
+cp .env.example .env
+# fill in ANTHROPIC_API_KEY and GITHUB_PAT (the fine-grained PAT from prerequisites)
 
-python3 setup.py
+python3 scripts/setup.py
 ```
 
 This:
-1. Uploads your 5-7 seed files via the Files API and persists the `file_id`s
+1. Uploads your seed files (3 required + any optional ones present) via the Files API and persists the `file_id`s
 2. Creates a Managed Agents environment (cloud sandbox config) for the blog agent
 3. Creates the blog agent with your system prompt
 4. Writes all IDs to `.env`
@@ -314,7 +354,7 @@ Then stand up the podcast agent — it **reuses** the blog agent's seed files, s
 python3 scripts/podcast-setup.py
 ```
 
-This reads `SEED_FILE_IDS` from `.env` (set by `setup.py` above), creates a separate environment + agent for the podcast curator, and writes `PODCAST_ENV_ID`, `PODCAST_AGENT_ID`, `PODCAST_AGENT_VERSION` to `.env` — never clobbering the blog agent's keys.
+This reads `SEED_FILE_IDS` from `.env` (set by `scripts/setup.py` above), creates a separate environment + agent for the podcast curator, and writes `PODCAST_ENV_ID`, `PODCAST_AGENT_ID`, `PODCAST_AGENT_VERSION` to `.env` — never clobbering the blog agent's keys.
 
 Repeat the same pattern for the tweet agent (its setup lives under `tweet-agents/` — see Step 7).
 
@@ -357,11 +397,11 @@ Nine secrets on the KB repo (Settings → Secrets and variables → Actions):
 | `SEED_FILE_IDS` | From `.env` (shared by both agents — comma-separated `name:file_id` pairs) |
 | `KB_REPO_PAT` | Your fine-grained PAT |
 
-A `setup-secrets.py` script in this repo automates this via the GitHub API if your PAT has `Secrets: Read & write`. Alternatively, `gh secret set <NAME> --repo <owner>/<kb-repo> --body <value>` works per secret.
+The fastest way is the GitHub CLI: `gh secret set <NAME> --repo <owner>/<kb-repo> --body <value>` per secret (or paste them in the repo's Settings UI).
 
 ### Step 7: Deploy the tweet agents (ingestion + bookmarker)
 
-The tweet-kb-agent (analysis + commit) and tweet-bookmarker (hourly feed scoring) both live under [`tweet-agents/`](./tweet-agents) and share a single Python package. Both run locally on your Mac — tweet ingestion because X's authenticated feeds are easier from a real Chrome profile, bookmarking because the write action (clicking Bookmark) must happen from your authenticated session.
+The tweet-kb-agent (analysis + commit) and tweet-bookmarker (feed scoring every 3 hours) both live under [`tweet-agents/`](./tweet-agents) and share a single Python package. Both run locally on your Mac — tweet ingestion because X's authenticated feeds are easier from a real Chrome profile, bookmarking because the write action (clicking Bookmark) must happen from your authenticated session.
 
 Detailed walkthrough: [`tweet-agents/SETUP.md`](./tweet-agents/SETUP.md). The short version:
 
@@ -387,7 +427,7 @@ python run_bookmarker.py       # manual first run (scores feeds + bookmarks top 
 Once manual runs are clean:
 
 - Schedule `run_tweet_ingest.py` 3×/day (`python make_launchd.py` generates a LaunchAgent plist).
-- Schedule `run_bookmarker.py` hourly 06:00–00:00 using `com.example.tweet-bookmarker.plist.template` as a starting point. Fill in the paths + secrets and drop it into `~/Library/LaunchAgents/`. **Never commit a filled-in plist** — the `.gitignore` excludes it.
+- Schedule `run_bookmarker.py` every 3 hours 06:30–21:30 using `com.example.tweet-bookmarker.plist.template` as a starting point. Fill in the paths + secrets (including `GIT_COMMITTER_EMAIL`) and drop it into `~/Library/LaunchAgents/`. **Never commit a filled-in plist** — the `.gitignore` excludes it.
 
 ### Step 8: Deploy the reader (optional Vercel frontend)
 
@@ -398,12 +438,14 @@ What the reader gives you:
 - Mobile + desktop reading with real typography, navigation, and search across every analysis
 - 0-10 rating from the UI; the reader patches `user_score:` in the page frontmatter and commits to `main`, so the agents pick up your feedback on their next run
 - Per-page chat with Claude — the full page body is prepended as system prompt so answers are grounded in the analysis. Ephemeral; nothing persisted
+- Read-state tracking synced across devices (Upstash Redis) — day pages show which analyses you've already read
+- An `/admin/analyze` page: paste any article URL and it dispatches `blog-ingest.yml` in single-URL mode via `workflow_dispatch` — the fastest way to push something you found into the KB from your phone
 
 **To deploy**:
 
 1. Copy the `reader/` directory from this scaffold into your KB repo root. Commit + push.
 2. Create a Vercel project from your KB repo. Set **Root Directory** = `reader`.
-3. Add env vars (template at `reader/.env.local.example`): `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_TOKEN` (fine-grained PAT with `contents: write` scoped only to this repo), `ANTHROPIC_API_KEY`, `GITHUB_WEBHOOK_SECRET` (random string), and either the two `CF_ACCESS_*` vars (if you're gating via Cloudflare Access) or `SKIP_ACCESS_VERIFY=true` (to defer auth). Alternative: set `BASIC_AUTH_USER` + `BASIC_AUTH_PASSWORD` for a simpler HTTP Basic Auth gate.
+3. Add env vars (template at `reader/.env.local.example`): `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_TOKEN` (fine-grained PAT with `contents: write` scoped only to this repo), `ANTHROPIC_API_KEY`, `GITHUB_WEBHOOK_SECRET` (random string), optionally `KV_REST_API_URL` + `KV_REST_API_TOKEN` (Upstash Redis via the Vercel Marketplace — enables read-state sync), and either the two `CF_ACCESS_*` vars (if you're gating via Cloudflare Access) or `SKIP_ACCESS_VERIFY=true` (to defer auth). Alternative: set `BASIC_AUTH_USER` + `BASIC_AUTH_PASSWORD` for a simpler HTTP Basic Auth gate.
 4. Add a GitHub webhook on your KB repo: Settings → Webhooks → Add. URL = `https://<your-vercel-host>/api/revalidate`, same secret, "Just the push event". This triggers on-demand ISR when agents commit.
 5. **(Optional)** Gate behind Cloudflare Access for private access. Requires a custom domain you own (Access can't protect `*.vercel.app` hostnames). Instructions in [`reader/README.md`](./reader/README.md).
 
@@ -436,10 +478,9 @@ You'll see commits appear incrementally on `main` as each agent works through an
 ### Monitoring
 
 - **GitHub Actions tab** — see when each run fired, succeeded, or failed
-- **Blog run log** — `2026/MM/DD/run-log-blog-<slot>.md` for the blog agent's exhaustive audit (every fetch, every query, every cache decision)
-- **Podcast run log** — `2026/MM/DD/run-log-podcast-daily.md` for the podcast agent's equivalent (every show probed, every transcript attempt with HTTP status, every candidate considered)
+- **Run logs** — `_system/logs/{blog,podcast,tweet}.jsonl`, one JSON line per run (slot, counts, errors). `tail -1` any of them to see the latest run's outcome at a glance
 - **Watchdog logs** — the hourly watchdog logs all dispatch decisions to its own workflow runs, covering both blog and podcast slots
-- **Bookmarker log (local)** — `tail -f /tmp/tweet-bookmarker.log` on your laptop streams every hourly bookmarker run; check `_system/profile/bookmark-considered.jsonl` on GitHub for the per-run audit of what was evaluated and the agent's reasoning per decision
+- **Bookmarker log (local)** — `tail -f /tmp/tweet-bookmarker.log` on your laptop streams every bookmarker run; check `_system/profile/bookmark-considered.jsonl` on GitHub for the per-run audit of what was evaluated and the agent's reasoning per decision
 
 ### Updating the agent
 
@@ -447,12 +488,12 @@ When you want to change agent behavior (tweak the prompt, add a tool, adjust the
 
 ```bash
 # Blog agent
-python3 scripts/setup.py --update                    # bumps AGENT_VERSION
-python3 sync-secret.py AGENT_VERSION <new>           # syncs to GitHub Actions secret
+python3 scripts/setup.py --update                    # bumps AGENT_VERSION in .env
+gh secret set AGENT_VERSION --repo <owner>/<kb-repo> --body <new>
 
 # Podcast agent
-python3 scripts/podcast-setup.py --update            # bumps PODCAST_AGENT_VERSION
-python3 sync-secret.py PODCAST_AGENT_VERSION <new>   # syncs to GitHub Actions secret
+python3 scripts/podcast-setup.py --update            # bumps PODCAST_AGENT_VERSION in .env
+gh secret set PODCAST_AGENT_VERSION --repo <owner>/<kb-repo> --body <new>
 ```
 
 Each agent is **independently versioned** — each update creates a new immutable version. Sessions can pin to a specific version for reproducibility, or use the latest. Old sessions running on prior versions don't break when you update, and updating one agent never affects the other.
@@ -469,10 +510,9 @@ The tweet agent costs less per run (smaller analyses, no discovery phase). If yo
 
 **Total: ~$950-1,900/month** for a fully-curated personal KB with deep daily synthesis across blogs, tweets, and podcasts. Cheaper than a research analyst.
 
-You can reduce costs by:
-- Running the blog curator 1-2x daily instead of 3x
-- Lowering the blog analysis cap (default: max 15, score ≥7) or the podcast cap (default: max 3, score ≥8)
-- Using `claude-sonnet-4-6` instead of `claude-opus-4-6` (3-5x cheaper, slightly less depth)
+The scaffold already ships the big cost levers flipped, learned from months of running this: all agents default to `claude-sonnet-4-6` (3-5x cheaper than Opus, minimal quality loss on this workload), the bookmarker fires 6×/day instead of hourly, and the exhaustive per-run markdown audit logs were replaced with one JSONL line per run. If you want to cut further:
+- Run the blog curator 1-2x daily instead of 3x
+- Lower the blog analysis cap (default: max 15, score ≥7) or the podcast cap (default: max 3, score ≥8)
 
 ### Failure modes and recovery
 
@@ -481,7 +521,7 @@ You can reduce costs by:
 | GitHub Actions cron skips a run | Known GH unreliability | The watchdog auto-dispatches within 1 hour |
 | `git push` fails with 503 | Anthropic CMA git proxy issue | Agent system prompt embeds PAT in remote URL to bypass proxy |
 | Session times out mid-analysis | Container 45-min limit | Incremental commit pattern means everything before the crash is durable |
-| Agent confused by edge case | Bad prompt instruction | Edit `system.md`, `setup.py --update`, retry |
+| Agent confused by edge case | Bad prompt instruction | Edit the agent's `system.md`, run `scripts/setup.py --update`, retry |
 | Reader deploy fails on Vercel | Committer email isn't GitHub-verified | Set `GIT_COMMITTER_EMAIL` env var (see Step 8 Gotcha) |
 | Two agents conflict on git push | Concurrent push to main | Both agents do `pull --rebase` and retry up to 3x |
 
@@ -491,12 +531,12 @@ You can reduce costs by:
 
 A few principles the system depends on:
 
-1. **Date-first organization.** you browses `2026/04/15/` and sees the day's content. Content-type-first organization (`analyses/`, `syntheses/`, `topics/` folders separately) buries today under months of history.
+1. **Date-first organization.** You browse `2026/04/15/` and sees the day's content. Content-type-first organization (`analyses/`, `syntheses/`, `topics/` folders separately) buries today under months of history.
 2. **Incremental commits.** Each analysis is one atomic commit+push. A session crash at analysis 5 of 12 leaves 1-4 safely in git. The next run dedupes via `blogs-ingested.jsonl` and only redoes 5-12.
 3. **Versioned agents.** Agent prompts are persisted on Anthropic's side and versioned. Updates don't break in-flight sessions; rollback is one API call.
-4. **Two-source interest model.** Static seed (ground truth, mounted every run) + evolving deltas (driven by feedback). The seed never moves; deltas grow over time. you can audit every shift in `evolution.md`.
+4. **Two-source interest model.** Static seed (ground truth, mounted every run) + evolving deltas (driven by feedback). The seed never moves; deltas grow over time. You can audit every shift in `evolution.md`.
 5. **Persistent feed cache.** The agent doesn't re-probe RSS endpoints every run — it caches working feed URLs in `_system/profile/feed_map.json`. ~90% reduction in HTTP probes after the first run.
-6. **Exhaustive audit logs.** Every fetch, every query, every cache decision is one chronological line in the run log. You can answer "did the agent check $publication this morning?" with a `grep`.
+6. **One-line run logs.** Every run appends a single JSON line to `_system/logs/<agent>.jsonl` — slot, counts, candidates, errors. Enough to answer "did the agent run this morning, and what did it do?" with a `tail -1`, without paying tokens for an exhaustive markdown audit trail (the original design; cut for cost).
 7. **Watchdog catches missed crons.** GH Actions cron is unreliable; a separate hourly watchdog detects and replays missed slots.
 8. **Topics as cross-cutting indices.** Topic files aren't just lists of paths — they're navigable mini-indexes with summaries, key analyses tables, open questions. All four agents contribute cross-references — a topic file like `agent-reliability.md` ends up with blog analyses, tweet analyses, and podcast analyses in the same Key Analyses table, sorted by date. The KB's knowledge graph emerges from this.
 9. **Hybrid local/cloud where auth forces it.** Ingestion and blog curation run fully cloud-side because their tools (git, web_fetch, web_search) don't need your personal auth. Bookmarking writes back to X, which requires your authenticated session — so the bookmarker keeps the judgment in a cloud CMA session but does the actual bookmark click locally via Playwright. Your Chrome cookies never leave your laptop. This is the "credentials host-side via custom tools" pattern from Anthropic's Managed Agents client-patterns guide — applicable any time an agent needs to act on a service whose auth is bound to a real user session (Slack, Gmail, banking, etc.).
@@ -512,14 +552,15 @@ This scaffold is everything you need to stand up the full system — four manage
 |---|---|
 | `agents/kb-blog-curator.system.md` | Blog agent system prompt — adapt the persona/topics, keep the structure |
 | `agents/kb-podcast-curator.system.md` | Podcast agent system prompt — transcript-discovery pipeline, `## Direct Quotes` section, pinned-shows starter list |
-| `scripts/setup.py` | Blog agent: creates/updates Anthropic environment + agent, uploads seed files |
+| `scripts/setup.py` | Blog agent: creates/updates Anthropic environment + agent, uploads seed files (3 required + optional taste-profile artifacts) |
 | `scripts/run.py` | Blog agent: runtime script invoked by GitHub Actions for each session |
 | `scripts/podcast-setup.py` | Podcast agent: reuses blog `SEED_FILE_IDS`, creates a separate env + agent for the podcast curator |
 | `scripts/podcast-run.py` | Podcast agent: runtime script invoked by `podcast-ingest.yml` |
 | `scripts/migrate_repo.py` | One-shot migration script (date-first restructure) — useful if you start with an older content-type-first layout |
 | `scripts/url_sources.py` | Extract URL corpus from a Claude.ai conversation export |
-| `.github/workflows/blog-ingest.yml` | Blog agent workflow — cron 3x daily + manual trigger |
-| `.github/workflows/podcast-ingest.yml` | Podcast agent workflow — cron 1x daily @ 12:30 PT + manual trigger |
+| `scripts/requirements.txt` | Python deps for the setup/runtime scripts |
+| `.github/workflows/blog-ingest.yml` | Blog agent workflow — cron 3x daily + manual trigger (optional single-URL input) |
+| `.github/workflows/podcast-ingest.yml` | Podcast agent workflow — cron 1x daily @ 12:30 PT + manual trigger (optional single-URL input) |
 | `.github/workflows/cron-watchdog.yml` | Hourly watchdog for missed cron runs on both workflows |
 | `seed-templates/` | Example seed files (interests, topic taxonomy, subscriptions) — replace with your own |
 | `tweet-agents/` | Local orchestrator for the tweet-kb-agent + tweet-bookmarker (Python + Playwright). See `tweet-agents/SETUP.md`. |
@@ -527,7 +568,7 @@ This scaffold is everything you need to stand up the full system — four manage
 | `tweet-agents/lib/bookmark_prompts.py` | Bookmarker agent system prompt + custom-tool schema |
 | `tweet-agents/build_taste_profile.py` | Regenerates the bookmarker's taste profile from the corpus of rated analyses |
 | `tweet-agents/com.example.tweet-bookmarker.plist.template` | launchd template — fill in paths + secrets, never commit the filled version |
-| `reader/` | Next.js app you deploy to Vercel as a mobile-friendly reading surface. See `reader/SPEC.md` + `reader/README.md`. |
+| `reader/` | Next.js app you deploy to Vercel as a mobile-friendly reading surface — rating, chat, read-state sync, admin analyze page. See `reader/SPEC.md` + `reader/README.md`. |
 
 ---
 

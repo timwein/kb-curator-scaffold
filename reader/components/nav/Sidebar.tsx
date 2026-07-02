@@ -42,6 +42,12 @@ export default function Sidebar({ manifest }: SidebarProps) {
         <Link href="/search" className="hover:text-[var(--accent)]">
           Search
         </Link>
+        <Link
+          href="/admin/analyze"
+          className="text-[var(--accent)] hover:opacity-80"
+        >
+          + Analyze URL
+        </Link>
       </nav>
 
       <section className="mb-6">

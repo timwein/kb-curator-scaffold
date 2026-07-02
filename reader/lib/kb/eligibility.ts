@@ -1,10 +1,11 @@
 import type { KbPage } from "./types";
 
 /**
- * A page gets the interactive footer (rating + chat) iff it has a `user_score`
- * frontmatter field AND its kind is not `runlog`. This captures blog analyses,
- * tweet analyses, and syntheses; excludes run-logs, daily READMEs, and topics.
+ * A page shows the interactive footer when either the rating widget or chat is
+ * available. Chat is enabled on every analysis kind (blog, tweet, podcast,
+ * synthesis). Rating is enabled on the same set minus `slot: manual` pages
+ * (the user's personal URL submissions — no agent feedback loop to close).
  */
 export function canInteract(page: KbPage): boolean {
-  return page.canRate; // canRate and canChat are always equal; single source of truth.
+  return page.canChat || page.canRate;
 }

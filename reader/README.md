@@ -47,11 +47,11 @@ See `.env.local.example`. Required in production:
 
 | Var                       | Purpose                                                                 |
 | ------------------------- | ----------------------------------------------------------------------- |
-| `GITHUB_REPO`             | `owner/repo` the KB lives in (e.g. `<your-username>/<your-kb-repo>`).   |
+| `GITHUB_REPO`             | `owner/repo` the KB lives in. Typically `<your-username>/<your-kb-repo>`. |
 | `GITHUB_BRANCH`           | Usually `main`.                                                         |
 | `GITHUB_TOKEN`            | Fine-grained PAT, scoped to the KB repo, with `contents: write`.        |
 | `GITHUB_WEBHOOK_SECRET`   | Shared secret configured on the GitHub repo webhook.                    |
-| `CF_ACCESS_TEAM_DOMAIN`   | Zero Trust team subdomain. Only needed if using Cloudflare Access.      |
+| `CF_ACCESS_TEAM_DOMAIN`   | Zero Trust team subdomain (e.g. `your-team`). Only needed if using Cloudflare Access. |
 | `CF_ACCESS_AUD`           | Application AUD tag from the Access app settings. Only needed if using Cloudflare Access. |
 | `ANTHROPIC_API_KEY`       | Server-side only. Used by `/api/chat`.                                  |
 | `BASIC_AUTH_USER`         | Username for HTTP Basic Auth gate (simpler alternative to Cloudflare Access). Leave unset to disable. |
@@ -96,7 +96,7 @@ routes' Access-JWT check becomes a no-op.
 2. Application domain: your Vercel hostname (e.g.
    `tweet-kb-reader.vercel.app` or a custom domain if you connect one).
 3. Add a **policy**: name "Owner only", Action Allow, Selector Emails,
-   value `<your-email>`.
+   value `you@example.com`.
 4. In the Access app's settings, grab the **Application Audience (AUD)
    Tag** — paste this as `CF_ACCESS_AUD` in Vercel.
 5. Your team domain (the part before `.cloudflareaccess.com`) is

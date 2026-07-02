@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 import anthropic
 from dotenv import dotenv_values, set_key
@@ -39,6 +42,8 @@ from dotenv import dotenv_values, set_key
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 ENV_FILE = PROJECT_ROOT / ".env"
 SYSTEM_PROMPT_FILE = PROJECT_ROOT / "agents" / "kb-podcast-curator.system.md"
+
+MODEL = "claude-sonnet-4-6"
 
 
 # --------------------------------------------------------------------------
@@ -88,7 +93,7 @@ def create_agent(client: anthropic.Anthropic, system_prompt: str) -> tuple[str, 
     agent = client.beta.agents.create(
         name="kb-podcast-curator",
         description="Scheduled curator for podcast interview transcripts. Writes structured analyses to <your-username>/<your-kb-repo> alongside the blog and tweet agents.",
-        model="claude-opus-4-6",
+        model=MODEL,
         system=system_prompt,
         tools=[
             {
@@ -108,6 +113,7 @@ def update_agent(client: anthropic.Anthropic, agent_id: str, system_prompt: str,
     updated = client.beta.agents.update(
         agent_id,
         version=int(current_version),
+        model=MODEL,
         system=system_prompt,
         tools=[
             {
@@ -122,6 +128,44 @@ def update_agent(client: anthropic.Anthropic, agent_id: str, system_prompt: str,
     return str(updated.version)
 
 
+def sync_github_agent_version_secret(new_version: str, kb_repo_url: str | None) -> None:
+    """Best-effort: push PODCAST_AGENT_VERSION=<new_version> to the KB repo's
+    Actions secrets. Uses the `gh` CLI and GITHUB_PAT/GH_TOKEN from env.
+    On any failure, prints manual-fix instructions and returns — never raises."""
+    if not kb_repo_url:
+        print("  (skip GH secret sync: KB_REPO_URL not set in .env)")
+        return
+
+    parsed = urlparse(kb_repo_url)
+    path = parsed.path.strip("/").removesuffix(".git")
+    if parsed.netloc != "github.com" or path.count("/") != 1:
+        print(f"  (skip GH secret sync: can't parse owner/repo from KB_REPO_URL={kb_repo_url})")
+        return
+    repo = path
+
+    if not shutil.which("gh"):
+        print("  (skip GH secret sync: `gh` CLI not installed — run: "
+              f"gh secret set PODCAST_AGENT_VERSION --repo {repo} --body {new_version})")
+        return
+
+    token = os.environ.get("GITHUB_PAT") or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("  (skip GH secret sync: no GITHUB_PAT/GH_TOKEN in env — run: "
+              f"gh secret set PODCAST_AGENT_VERSION --repo {repo} --body {new_version})")
+        return
+
+    try:
+        subprocess.run(
+            ["gh", "secret", "set", "PODCAST_AGENT_VERSION", "--repo", repo, "--body", new_version],
+            env={**os.environ, "GH_TOKEN": token},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        print(f"  → synced PODCAST_AGENT_VERSION={new_version} to GH secrets on {repo}")
+    except subprocess.CalledProcessError as e:
+        print(f"  ! GH secret sync failed (exit {e.returncode}): {e.stderr.strip() or e.stdout.strip()}")
+        print(f"    Fix manually: gh secret set PODCAST_AGENT_VERSION --repo {repo} --body {new_version}")
 
 
 # --------------------------------------------------------------------------
@@ -150,6 +194,8 @@ def main() -> None:
         new_version = update_agent(client, agent_id, system_prompt, current_version)
         save_env_key("PODCAST_AGENT_VERSION", new_version)
         print(f"✓ Podcast agent updated to version {new_version}")
+        print("Syncing PODCAST_AGENT_VERSION to GitHub Actions secrets...")
+        sync_github_agent_version_secret(new_version, env.get("KB_REPO_URL"))
         return
 
     # -------- Fresh setup --------
