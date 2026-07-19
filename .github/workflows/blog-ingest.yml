@@ -1,9 +1,14 @@
 # Deploy this file to the KB repo at .github/workflows/blog-ingest.yml
 #
-# Runs the kb-blog-curator managed agent three times daily:
+# Runs the kb-blog-curator managed agent twice daily:
 #   07:00 PT → morning  (14:00 UTC during PDT / 15:00 UTC during PST)
-#   12:00 PT → midday   (19:00 UTC during PDT / 20:00 UTC during PST)
-#   18:00 PT → evening  (01:00 UTC next day during PDT / 02:00 UTC next day during PST)
+#   18:00 PT → evening  (01:00 UTC during PDT / 02:00 UTC during PST)
+#
+# Cost architecture (2026-07): the workflow now pre-fetches feeds and ranks
+# candidates in Python + one cheap Haiku call BEFORE creating the Sonnet
+# session — see scripts/run-blog-ingest.py. Only the morning slot runs
+# web-search discovery. An evening run with nothing to analyze skips the
+# session entirely.
 #
 # The cron expressions are PDT-aligned (matching the current date range).
 # They will drift by 1 hour during PST (Nov–Mar). GitHub Actions cron is UTC
@@ -15,12 +20,11 @@ name: kb-blog-curator
 on:
   schedule:
     - cron: '0 14 * * *'   # 07:00 PDT / 06:00 PST — morning
-    - cron: '0 19 * * *'   # 12:00 PDT / 11:00 PST — midday
     - cron: '0 1 * * *'    # 18:00 PDT / 17:00 PST — evening
   workflow_dispatch:       # manual trigger from the Actions tab
     inputs:
       slot:
-        description: 'Slot name (morning/midday/evening/manual)'
+        description: 'Slot name (morning/evening/manual)'
         required: false
         default: 'manual'
       url:
@@ -58,7 +62,6 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then
             case "$TRIGGERING_CRON" in
               '0 14 * * *') slot=morning ;;   # 07:00 PDT / 06:00 PST
-              '0 19 * * *') slot=midday  ;;   # 12:00 PDT / 11:00 PST
               '0 1 * * *')  slot=evening ;;   # 18:00 PDT / 17:00 PST
               *)            slot=manual  ;;   # unrecognized cron — shouldn't happen
             esac
@@ -68,13 +71,23 @@ jobs:
             echo "slot=${DISPATCH_SLOT:-manual}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout runner script
-        # We only need run.py — not the whole KB. The managed agent clones
-        # the KB itself as a session resource.
+      - name: Checkout runner script + pipeline state
+        # The runner pre-fetches feeds and ranks candidates before creating
+        # the session, so it needs the feed cache, dedupe log, and profile
+        # files as well as the scripts. The managed agent still clones the
+        # full KB itself as a session resource.
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
             scripts/run-blog-ingest.py
+            scripts/kb_pipeline_lib.py
+            _system/profile/feed_map.json
+            _system/profile/feed_inbox.jsonl
+            _system/profile/deltas.md
+            _system/profile/interests_seed.md
+            _system/profile/feedback.md
+            _system/profile/pinned_sources.md
+            _system/meta/blogs-ingested.jsonl
           sparse-checkout-cone-mode: false
 
       - name: Set up Python
@@ -83,7 +96,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install 'anthropic>=0.40.0'
+        # curl-cffi: Chrome TLS impersonation for feed fetches — Substack's
+        # Cloudflare 403s Python's native TLS fingerprint from Actions IPs.
+        run: pip install 'anthropic>=0.40.0' 'curl-cffi>=0.7'
 
       - name: Run kb-blog-curator session
         env:
@@ -102,5 +117,10 @@ jobs:
           KB_REPO_URL:       ${{ github.server_url }}/${{ github.repository }}
           KB_REPO_TOKEN:     ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
           SLOT:              ${{ steps.slot.outputs.slot }}
+          # Committer identity the agent uses. Set GIT_COMMITTER_EMAIL to a
+          # GitHub-verified email on your account if you deploy the reader
+          # (Vercel Hobby rejects unverifiable committers).
+          GIT_COMMITTER_EMAIL: ${{ secrets.GIT_COMMITTER_EMAIL }}
+          GIT_COMMITTER_NAME:  ${{ secrets.GIT_COMMITTER_NAME }}
           SINGLE_URL:        ${{ github.event.inputs.url || '' }}
         run: python scripts/run-blog-ingest.py

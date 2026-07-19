@@ -58,8 +58,7 @@ jobs:
           WORKFLOWS = [
               ("blog-ingest.yml", [
                   ("morning", 14, 0),   # 07:00 PT (PDT=14:00, PST=15:00)
-                  ("midday",  19, 0),   # 12:00 PT (PDT=19:00, PST=20:00)
-                  ("evening",  1, 0),   # 18:00 PT (PDT=01:00 next day, PST=02:00 next day)
+                  ("evening", 1, 0),    # 18:00 PT (PDT=01:00, PST=02:00)
               ]),
               ("podcast-ingest.yml", [
                   ("daily",   19, 30),  # 12:30 PT (PDT=19:30, PST=20:30)
@@ -90,17 +89,21 @@ jobs:
                   else:
                       expected = today_utc - timedelta(days=1)
 
-                  # Window: a run must exist between expected and expected + WINDOW_MIN
+                  # Window: give the scheduled run WINDOW_MIN to appear before intervening
                   window_end = expected + timedelta(minutes=WINDOW_MIN)
                   if now < window_end:
                       print(f"  [{slot}] expected at {expected.isoformat()}, window not yet closed (ends {window_end.isoformat()}) — skipping")
                       continue
 
-                  # Did anything run for this slot in the window? Check both schedule and workflow_dispatch
+                  # Covered if ANYTHING ran since the expected fire time — scheduled,
+                  # manual, or a previous watchdog replacement. Checking only inside
+                  # the window makes every later hourly tick re-dispatch the same
+                  # missed slot forever (observed 2026-07-02: ~5 duplicate evening
+                  # runs after a schedule change left the window empty).
                   hits = []
                   for r in recent:
                       created = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
-                      if expected <= created <= window_end + timedelta(minutes=30):
+                      if created >= expected:
                           hits.append(r)
 
                   if hits:
