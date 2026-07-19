@@ -53,7 +53,7 @@ The KB grows by accretion. Topics files cross-link tweet content with blog conte
 ┌─────────────────────────────────────────────────────────────────┐
 │  Triggers                                                       │
 │                                                                  │
-│  GitHub Actions (cloud cron, 3x daily blog + 1x daily podcast   │
+│  GitHub Actions (cloud cron, 2x daily blog + 1x daily podcast   │
 │                 + watchdog hourly)                              │
 │    • blog-ingest.yml        → kicks off blog curator            │
 │    • podcast-ingest.yml     → kicks off podcast curator         │
@@ -190,9 +190,20 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 
 ### `kb-blog-curator`
 
-**Trigger:** Cron, 3x daily (default: 7am / 12pm / 6pm Pacific). Plus manual trigger and an hourly watchdog that catches missed cron runs.
+**Trigger:** Cron, 2x daily (default: 7am / 6pm Pacific). Plus manual trigger and an hourly watchdog that catches missed cron runs.
 
-**Per-run pipeline:**
+**Cost architecture (July revision):** the mechanical work that used to run *inside* the Managed Agents session — feed fetching, dedupe, candidate ranking — now runs in plain Python in the GitHub Actions runner, via `scripts/kb_pipeline_lib.py`:
+
+1. **Prefetch** — concurrent RSS/Atom fetch across the cached feed map, with a tiered strategy (urllib → curl → `curl_cffi` Chrome TLS impersonation) because Substack's Cloudflare 403s bot fingerprints from Actions IPs.
+2. **Dedupe** in Python against `_system/meta/blogs-ingested.jsonl`.
+3. **Rank** the fresh candidates with one cheap `claude-haiku-4-5` call against your interest profile (`_system/profile/interests_seed.md` in the KB repo) + current deltas.
+4. Only the handful of selected candidates go into the Sonnet session's kickoff — cutting the session's context (and its cache-read token bill) by an order of magnitude (~10M cache-read tokens removed per session).
+
+Web-search discovery runs **morning-only**; an evening run with nothing to analyze skips the session entirely. Every run (including the Haiku ranking call) appends a cost line to `_system/logs/costs.jsonl` so you can watch spend per pipeline per day.
+
+**Optional feed relay:** if some feeds are CDN-blocked even from the runner, a local script on any machine with a residential IP can write fetched entries to `_system/profile/feed_inbox.jsonl`; the runner consumes entries newer than 36h and only falls back to direct fetches for uncovered hosts. The scaffold works fine without this — it's an escape hatch for stubborn CDNs.
+
+**Per-run pipeline (inside the session):**
 
 1. **Load profile** — read seed files (interest profile, topic taxonomy, subscription list, URL corpus) and the agent's evolving deltas
 2. **Drain feedback inbox** — process anything you wrote to `_system/profile/feedback.md`, update interest model
@@ -210,6 +221,8 @@ The two content-curating agents (`tweet-kb-agent`, `kb-blog-curator`) run fully 
 ### `kb-podcast-curator`
 
 **Trigger:** Cron, once daily at 12:30 PT. Plus manual trigger and the same hourly watchdog that catches missed blog runs.
+
+**Orchestrator prefetch gate (July revision):** before any session is created, the runner prefetches the pinned shows' feeds in plain Python and checks a seen-episodes ledger. If nothing new has appeared, the run exits without creating a session at all (a "nothing new today" verdict used to cost a full session setup). The gate fails open — any error falls back to a full session. New-show discovery (the web-search hunt) is gated to Mondays and Thursdays to cut cost; pinned-show monitoring still runs daily.
 
 **Per-run pipeline:**
 
@@ -362,28 +375,33 @@ Repeat the same pattern for the tweet agent (its setup lives under `tweet-agents
 
 Three workflows go into the KB repo's `.github/workflows/`:
 
-- `blog-ingest.yml` — blog curator, cron 3x daily + manual trigger
+- `blog-ingest.yml` — blog curator, cron 2x daily (morning + evening) + manual trigger
 - `podcast-ingest.yml` — podcast curator, cron 1x daily @ 12:30 PT + manual trigger
 - `cron-watchdog.yml` — hourly check for missed runs on both workflows, auto-dispatch replacements
 
-Plus two runtime scripts that the workflows invoke:
+Plus three runtime files that the workflows invoke:
 
 - `scripts/run-blog-ingest.py`
 - `scripts/run-podcast-ingest.py`
+- `scripts/kb_pipeline_lib.py` (shared prefetch/rank/cost-log library)
+
+And one state file the Haiku ranker reads: commit your interest profile to `_system/profile/interests_seed.md` in the KB repo (same content as your `seed/interests_seed.md`).
 
 ```bash
 # Push files via curl (or just git commit + push from local clone of KB repo)
 cp .github/workflows/blog-ingest.yml    ~/my-knowledge-base/.github/workflows/
 cp .github/workflows/podcast-ingest.yml ~/my-knowledge-base/.github/workflows/
 cp .github/workflows/cron-watchdog.yml  ~/my-knowledge-base/.github/workflows/
-cp scripts/run.py         ~/my-knowledge-base/scripts/run-blog-ingest.py
-cp scripts/podcast-run.py ~/my-knowledge-base/scripts/run-podcast-ingest.py
+cp scripts/run-blog-ingest.py    ~/my-knowledge-base/scripts/
+cp scripts/run-podcast-ingest.py ~/my-knowledge-base/scripts/
+cp scripts/kb_pipeline_lib.py    ~/my-knowledge-base/scripts/
+cp seed/interests_seed.md        ~/my-knowledge-base/_system/profile/interests_seed.md
 cd ~/my-knowledge-base && git add -A && git commit -m "deploy agent workflows" && git push
 ```
 
 ### Step 6: Add GitHub Actions secrets
 
-Nine secrets on the KB repo (Settings → Secrets and variables → Actions):
+Secrets on the KB repo (Settings → Secrets and variables → Actions):
 
 | Secret | Value |
 |---|---|
@@ -395,7 +413,9 @@ Nine secrets on the KB repo (Settings → Secrets and variables → Actions):
 | `PODCAST_AGENT_VERSION` | Podcast agent — from `.env` |
 | `PODCAST_ENV_ID` | Podcast agent — from `.env` |
 | `SEED_FILE_IDS` | From `.env` (shared by both agents — comma-separated `name:file_id` pairs) |
-| `KB_REPO_PAT` | Your fine-grained PAT |
+| `KB_REPO_PAT` | *(optional)* Your fine-grained PAT. If unset, workflows fall back to the built-in `GITHUB_TOKEN` — fine unless you need agent commits to trigger other workflows |
+| `GIT_COMMITTER_EMAIL` | *(optional)* GitHub-verified email used as the agents' committer identity — required if you deploy the reader on Vercel Hobby |
+| `GIT_COMMITTER_NAME` | *(optional)* Committer name, defaults to `kb-curator` |
 
 The fastest way is the GitHub CLI: `gh secret set <NAME> --repo <owner>/<kb-repo> --body <value>` per secret (or paste them in the repo's Settings UI).
 
@@ -500,18 +520,26 @@ Each agent is **independently versioned** — each update creates a new immutabl
 
 ### Costs
 
-Real-world usage from the original setup:
-- **Per blog-curator run:** ~$5-10 in token usage. Heavy use of prompt caching (6.9M cache reads vs 400K cache writes per run) keeps costs low.
-- **Per podcast-curator run:** ~$10-20. Lower cap (max 3 vs blog's max 15) but much longer inputs — transcripts are typically 15k-40k words each, vs 2k-5k for a blog post.
-- **Per day:** ~$25-50 across all scheduled content agents (3 blog runs + 1 podcast run).
-- **Per month:** ~$750-1,500.
+Real-world usage from the original setup, **before** the July cost revision:
+- Per blog-curator run: ~$5-10 (feed monitoring + ranking ran inside the session — ~7M cache-read tokens per run)
+- Per podcast-curator run: ~$10-20
+- Per day: ~$25-50; per month: ~$750-1,500
+
+**After** the July revision (prefetch + Haiku ranking outside the session, discovery gated to morning/Mon+Thu, sessions on `claude-sonnet-5` intro pricing, no-work runs skipped entirely), per-session context dropped by roughly an order of magnitude. Expect something like **$5-15/day** for the two cloud pipelines depending on volume — and check `_system/logs/costs.jsonl` in your own KB, which the pipeline appends a per-run cost line to (session + ranking, priced from the resolved model).
 
 The tweet agent costs less per run (smaller analyses, no discovery phase). If you bookmark heavily (~50 tweets/day), expect another $200-400/month.
 
-**Total: ~$950-1,900/month** for a fully-curated personal KB with deep daily synthesis across blogs, tweets, and podcasts. Cheaper than a research analyst.
+The tweet agents add a smaller amount on top (no discovery phase; Sonnet). All-in, a fully-curated personal KB with deep daily synthesis across blogs, tweets, and podcasts now lands in the low hundreds of dollars per month — cheaper than a research analyst.
 
-The scaffold already ships the big cost levers flipped, learned from months of running this: all agents default to `claude-sonnet-4-6` (3-5x cheaper than Opus, minimal quality loss on this workload), the bookmarker fires 6×/day instead of hourly, and the exhaustive per-run markdown audit logs were replaced with one JSONL line per run. If you want to cut further:
-- Run the blog curator 1-2x daily instead of 3x
+The scaffold ships every cost lever already flipped, learned from months of running this:
+- All agents default to `claude-sonnet-5` (near-Opus quality at $2/$10 intro pricing)
+- Feed monitoring, dedupe, and candidate ranking run in plain Python + one Haiku call *before* the session (`scripts/kb_pipeline_lib.py`) instead of burning session tokens
+- Web-search discovery: morning-only (blog), Mon/Thu-only (podcast new-show hunt)
+- Runs with nothing to analyze skip the session entirely (evening blog runs, podcast gate)
+- The bookmarker fires 6×/day instead of hourly; markdown audit logs replaced by one JSONL line per run
+
+If you want to cut further:
+- Run the blog curator 1x daily instead of 2x
 - Lower the blog analysis cap (default: max 15, score ≥7) or the podcast cap (default: max 3, score ≥8)
 
 ### Failure modes and recovery
@@ -553,13 +581,14 @@ This scaffold is everything you need to stand up the full system — four manage
 | `agents/kb-blog-curator.system.md` | Blog agent system prompt — adapt the persona/topics, keep the structure |
 | `agents/kb-podcast-curator.system.md` | Podcast agent system prompt — transcript-discovery pipeline, `## Direct Quotes` section, pinned-shows starter list |
 | `scripts/setup.py` | Blog agent: creates/updates Anthropic environment + agent, uploads seed files (3 required + optional taste-profile artifacts) |
-| `scripts/run.py` | Blog agent: runtime script invoked by GitHub Actions for each session |
+| `scripts/run-blog-ingest.py` | Blog agent runtime: prefetch feeds → dedupe → Haiku-rank → Sonnet session with only the selected candidates |
 | `scripts/podcast-setup.py` | Podcast agent: reuses blog `SEED_FILE_IDS`, creates a separate env + agent for the podcast curator |
-| `scripts/podcast-run.py` | Podcast agent: runtime script invoked by `podcast-ingest.yml` |
+| `scripts/run-podcast-ingest.py` | Podcast agent runtime: prefetch gate (skips the session when nothing is new) + session orchestration |
+| `scripts/kb_pipeline_lib.py` | Shared pipeline library: tiered feed prefetch, canonical-URL dedupe, Haiku candidate ranking, per-run cost estimation + `costs.jsonl` appends |
 | `scripts/migrate_repo.py` | One-shot migration script (date-first restructure) — useful if you start with an older content-type-first layout |
 | `scripts/url_sources.py` | Extract URL corpus from a Claude.ai conversation export |
 | `scripts/requirements.txt` | Python deps for the setup/runtime scripts |
-| `.github/workflows/blog-ingest.yml` | Blog agent workflow — cron 3x daily + manual trigger (optional single-URL input) |
+| `.github/workflows/blog-ingest.yml` | Blog agent workflow — cron 2x daily (morning/evening) + manual trigger (optional single-URL input) |
 | `.github/workflows/podcast-ingest.yml` | Podcast agent workflow — cron 1x daily @ 12:30 PT + manual trigger (optional single-URL input) |
 | `.github/workflows/cron-watchdog.yml` | Hourly watchdog for missed cron runs on both workflows |
 | `seed-templates/` | Example seed files (interests, topic taxonomy, subscriptions) — replace with your own |

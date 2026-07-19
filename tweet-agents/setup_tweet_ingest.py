@@ -31,7 +31,7 @@ EXAMPLE_PATH = Path(__file__).parent / "config.example.json"
 
 ENVIRONMENT_NAME = "tweet-kb-environment"
 AGENT_NAME = "tweet-kb-agent"
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-sonnet-5"
 
 
 def load_or_init_config() -> dict:

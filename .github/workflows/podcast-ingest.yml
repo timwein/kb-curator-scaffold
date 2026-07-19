@@ -69,6 +69,7 @@ jobs:
         with:
           sparse-checkout: |
             scripts/run-podcast-ingest.py
+            scripts/kb_pipeline_lib.py
           sparse-checkout-cone-mode: false
 
       - name: Set up Python
@@ -93,5 +94,10 @@ jobs:
           KB_REPO_URL:            ${{ github.server_url }}/${{ github.repository }}
           KB_REPO_TOKEN:          ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
           SLOT:                   ${{ steps.slot.outputs.slot }}
+          # Committer identity the agent uses. Set GIT_COMMITTER_EMAIL to a
+          # GitHub-verified email on your account if you deploy the reader
+          # (Vercel Hobby rejects unverifiable committers).
+          GIT_COMMITTER_EMAIL:    ${{ secrets.GIT_COMMITTER_EMAIL }}
+          GIT_COMMITTER_NAME:     ${{ secrets.GIT_COMMITTER_NAME }}
           SINGLE_URL:             ${{ github.event.inputs.url || '' }}
         run: python scripts/run-podcast-ingest.py
