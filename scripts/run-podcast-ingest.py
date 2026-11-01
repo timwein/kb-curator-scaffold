@@ -16,6 +16,10 @@ Reads all required IDs from environment variables:
                               with the blog agent — uploaded by setup.py)
     KB_REPO_URL             — e.g. https://github.com/<your-username>/<your-kb-repo>
     KB_REPO_TOKEN           — GitHub PAT or GITHUB_TOKEN with contents:write
+                              (orchestrator only; never given to the session)
+    KB_SESSION_TOKEN        — credential for the session's repo mount: the Actions
+                              job GITHUB_TOKEN, or locally a fine-grained PAT with
+                              only Contents: read and write on the KB repo
     SLOT                    — "daily" (or "manual" for ad-hoc dispatches)
     SINGLE_URL              — optional: if set, skip discovery/ranking/synthesis
                               and analyze just this one episode URL (listen page,
@@ -40,6 +44,7 @@ try:
     import kb_pipeline_lib as lib
 except ImportError:  # source-repo copy run outside the KB checkout
     lib = None
+import session_guard as guard  # noqa: E402 — stdlib only, always importable
 
 # Optional: load .env for local runs. In GitHub Actions, env comes from workflow
 # secrets and python-dotenv isn't installed — skip silently in that case.
@@ -69,6 +74,10 @@ if not KB_REPO_TOKEN:
         "No GitHub token found. Set one of: KB_REPO_TOKEN, GITHUB_PAT, GITHUB_TOKEN "
         "(must have contents:write on the KB repo)."
     )
+
+# The agent session gets its own short-lived credential, never KB_REPO_TOKEN.
+# KB_REPO_TOKEN stays on the trusted orchestrator side (API writes, dispatch).
+KB_SESSION_TOKEN = guard.session_token(KB_REPO_TOKEN)
 
 # Committer identity for agent pushes. Use a GitHub-verified email so
 # Vercel's committer-to-GitHub-user check passes on reader deploys.
@@ -426,16 +435,9 @@ def parse_seed_file_ids(raw: str) -> list[dict]:
 
 def kickoff_text(gate: dict | None = None) -> str:
     now = datetime.now(timezone.utc).isoformat()
-    git_push_guidance = (
-        "Before any git commit, set your identity so Vercel can match the author:\n"
-        f"    git -C /workspace/kb config user.email '{GIT_COMMITTER_EMAIL}'\n"
-        f"    git -C /workspace/kb config user.name '{GIT_COMMITTER_NAME}'\n\n"
-        f"GIT_PUSH_PAT={KB_REPO_TOKEN}\n\n"
-        "If git push returns 503, fix the remote URL to bypass the CMA proxy:\n"
-        f"    git remote set-url origin https://x-access-token:{KB_REPO_TOKEN}"
-        f"@github.com/<your-username>/<your-kb-repo>.git\n"
-        "Then retry the push."
-    )
+    # No credential in here: the kickoff is readable by every fetched page and
+    # is stored in the session transcript.
+    git_push_guidance = guard.git_push_guidance(GIT_COMMITTER_EMAIL, GIT_COMMITTER_NAME)
 
     if SINGLE_URL:
         # Manual single-URL submission from the reader app.
@@ -549,7 +551,7 @@ def main() -> int:
     resources.append({
         "type": "github_repository",
         "url": KB_REPO_URL,
-        "authorization_token": KB_REPO_TOKEN,
+        "authorization_token": KB_SESSION_TOKEN,
         "mount_path": "/workspace/kb",
         "checkout": {"type": "branch", "name": "main"},
     })
@@ -559,6 +561,11 @@ def main() -> int:
         agent_ref = {"type": "agent", "id": AGENT_ID, "version": int(AGENT_VERSION)}
     else:
         agent_ref = AGENT_ID  # string shorthand → latest version
+
+    kickoff = kickoff_text(gate)
+    guard.assert_no_secrets(kickoff, KB_REPO_TOKEN, KB_SESSION_TOKEN,
+                            os.environ.get("ANTHROPIC_API_KEY", ""))
+    base_sha = guard.branch_sha(KB_REPO_URL, KB_REPO_TOKEN)
 
     mode_label = f"single-url={SINGLE_URL}" if SINGLE_URL else f"slot={SLOT}"
     print(f"[{datetime.now(timezone.utc).isoformat()}] creating session "
@@ -580,7 +587,7 @@ def main() -> int:
             session_id=session.id,
             events=[{
                 "type": "user.message",
-                "content": [{"type": "text", "text": kickoff_text(gate)}],
+                "content": [{"type": "text", "text": kickoff}],
             }],
         )
 
@@ -671,7 +678,18 @@ def main() -> int:
             note=f"discovery={'yes' if DISCOVERY else 'no'}",
         )
 
-    # Exit code: 0 on clean idle/terminated, 1 otherwise
+    # Fail the job if the session touched code/config (possible prompt
+    # injection). Job-token pushes don't fire push triggers, so dispatch any
+    # follow-on workflows named in POST_SESSION_WORKFLOWS.
+    bad = guard.check_session_writes(KB_REPO_URL, KB_REPO_TOKEN, base_sha)
+    if bad:
+        guard.report_disallowed(bad)
+        return 2
+    if guard.session_made_commits(KB_REPO_URL, KB_REPO_TOKEN, base_sha):
+        for wf in filter(None, os.environ.get("POST_SESSION_WORKFLOWS", "").split(",")):
+            guard.dispatch_workflow(KB_REPO_URL, KB_REPO_TOKEN, wf.strip())
+
+    # Exit code: 0 clean, 1 session error, 2 session wrote outside the content allow-list
     return 0 if final.status in ("idle", "terminated") else 1
 
 
