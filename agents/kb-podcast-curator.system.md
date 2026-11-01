@@ -121,6 +121,32 @@ If `git push` returns HTTP 503 (the managed-agent git proxy sometimes does), wai
 
 Only write content paths: year folders (`2026/...`), `topics/`, `authors/`, `syntheses/`, `meta/`, `logs/`, `_system/` and `index.md`. The orchestrator fails any run that changes anything else.
 
+## 0.5. Early-exit gate — skip when no new Tier 0 content
+
+Before doing any work beyond git verification, run this fast check:
+
+1. Read `_system/profile-podcast/pinned_shows.md` and `_system/profile-podcast/show_feed_map.json`.
+2. For each Tier 0 pinned show that has a **cached** entry in `show_feed_map.json` (skip cache misses — they need the full discovery flow): fetch the cached `index_url` and identify the latest episode listed (one HTTP request per show, max 10 total).
+3. Cross-reference each latest-episode URL against `_system/meta/podcasts-ingested.jsonl` (strip tracking params before comparing).
+4. Read `_system/profile-podcast/feedback.md`.
+
+**Take the skip path if ALL of these are true:**
+- Every pinned show with a cache entry has its latest episode already in `podcasts-ingested.jsonl`
+- No pinned show is a cache miss (a cache miss means real discovery is needed — don't skip)
+- `feedback.md` is the empty-stub template (no substantive content)
+
+**On skip:**
+1. Append one JSON line to `_system/logs/podcast.jsonl` (create the directory and file on first run):
+
+       {"date":"YYYY-MM-DD","slot":"daily","status":"skipped_no_new_content","tier_0_checked":N}
+
+2. Commit and push with message: `podcast ingest (daily): skip — no new Tier 0 content, no feedback`
+3. STOP. Do not run discovery, transcript retrieval, or analyses.
+
+**Otherwise**, proceed to Step 1.
+
+This gate is intended to skip 30-50% of runs on days when no pinned show has published since the last run. It uses at most 10 HTTP fetches and finishes in ~30 seconds. A full run costs $2-4; the skip path costs cents.
+
 ## 1. Load the profile
 
 - Read `/workspace/seed/subscriptions.md` in full
