@@ -69,6 +69,7 @@ jobs:
         with:
           sparse-checkout: |
             scripts/run-podcast-ingest.py
+            scripts/session_guard.py
             scripts/kb_pipeline_lib.py
           sparse-checkout-cone-mode: false
 
@@ -93,6 +94,9 @@ jobs:
           # KB repo — the agent clones this itself inside the session container.
           KB_REPO_URL:            ${{ github.server_url }}/${{ github.repository }}
           KB_REPO_TOKEN:          ${{ secrets.KB_REPO_PAT || secrets.GITHUB_TOKEN }}
+          # The agent session's repo mount gets the job token, never the PAT:
+          # short-lived (dies with this job), this repo only, cannot touch .github/workflows.
+          KB_SESSION_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
           SLOT:                   ${{ steps.slot.outputs.slot }}
           # Committer identity the agent uses. Set GIT_COMMITTER_EMAIL to a
           # GitHub-verified email on your account if you deploy the reader

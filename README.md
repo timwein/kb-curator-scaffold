@@ -547,13 +547,24 @@ If you want to cut further:
 | Symptom | Cause | Fix |
 |---|---|---|
 | GitHub Actions cron skips a run | Known GH unreliability | The watchdog auto-dispatches within 1 hour |
-| `git push` fails with 503 | Anthropic CMA git proxy issue | Agent system prompt embeds PAT in remote URL to bypass proxy |
+| `git push` fails with 503 | Anthropic CMA git proxy issue | The session retries with backoff (2s, 4s, 8s, 16s), then logs the failure and stops. It is never given a token to work around the proxy (see Credentials and untrusted pages, below) |
 | Session times out mid-analysis | Container 45-min limit | Incremental commit pattern means everything before the crash is durable |
 | Agent confused by edge case | Bad prompt instruction | Edit the agent's `system.md`, run `scripts/setup.py --update`, retry |
 | Reader deploy fails on Vercel | Committer email isn't GitHub-verified | Set `GIT_COMMITTER_EMAIL` env var (see Step 8 Gotcha) |
 | Two agents conflict on git push | Concurrent push to main | Both agents do `pull --rebase` and retry up to 3x |
 
 ---
+
+### Credentials and untrusted pages
+
+The curator sessions `web_fetch` pages anyone can write, so treat everything in a session's kickoff and environment as readable by those pages. The runners therefore:
+
+- never put `KB_REPO_TOKEN` (or any secret) in the kickoff; `scripts/session_guard.py` checks each kickoff before it is sent
+- mount the KB repo into the session with `KB_SESSION_TOKEN`, the Actions job's `GITHUB_TOKEN` by default: repo-scoped, unable to edit workflows, and dead when the job ends
+- fail the job (exit code 2) if a session changes anything outside the content folders, so a prompt-injected edit to `scripts/` or `.github/` never runs unnoticed with real credentials
+- dispatch any push-triggered workflows you list in `POST_SESSION_WORKFLOWS`, since job-token pushes don't fire push triggers
+
+Keep `KB_REPO_PAT` for the orchestrator only, and give it the smallest scopes your workflows need.
 
 ## What makes this work
 

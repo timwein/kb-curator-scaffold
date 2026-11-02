@@ -31,7 +31,11 @@ Reads all required IDs from environment variables:
     ENV_ID             — pre-created environment ID
     SEED_FILE_IDS      — comma-separated `filename:file_id` pairs
     KB_REPO_URL        — e.g. https://github.com/<your-username>/<your-kb-repo>
-    KB_REPO_TOKEN      — GitHub PAT or GITHUB_TOKEN with contents:write
+    KB_REPO_TOKEN      — GitHub PAT or GITHUB_TOKEN with contents:write (orchestrator only;
+                         never given to the agent session)
+    KB_SESSION_TOKEN   — credential for the session's repo mount: the Actions
+                         job GITHUB_TOKEN, or locally a fine-grained PAT with
+                         only Contents: read and write on the KB repo
     SLOT               — "morning" or "evening" (passed from the cron workflow)
     SINGLE_URL         — optional: if set, skip discovery/ranking/synthesis and
                          analyze just this one URL (for manual submissions from
@@ -65,6 +69,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kb_pipeline_lib as lib  # noqa: E402
+import session_guard as guard  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Config
@@ -86,6 +91,10 @@ if not KB_REPO_TOKEN:
         "No GitHub token found. Set one of: KB_REPO_TOKEN, GITHUB_PAT, GITHUB_TOKEN "
         "(must have contents:write on the KB repo)."
     )
+
+# The agent session gets its own short-lived credential, never KB_REPO_TOKEN.
+# KB_REPO_TOKEN stays on the trusted orchestrator side (API writes, dispatch).
+KB_SESSION_TOKEN = guard.session_token(KB_REPO_TOKEN)
 
 # Committer identity for agent pushes. Use a GitHub-verified email so
 # Vercel's committer-to-GitHub-user check passes on reader deploys.
@@ -309,16 +318,9 @@ def prefetch_and_rank(
 # --------------------------------------------------------------------------
 
 def _git_push_guidance() -> str:
-    return (
-        "Before any git commit, set your identity so Vercel can match the author:\n"
-        f"    git -C /workspace/kb config user.email '{GIT_COMMITTER_EMAIL}'\n"
-        f"    git -C /workspace/kb config user.name '{GIT_COMMITTER_NAME}'\n\n"
-        f"GIT_PUSH_PAT={KB_REPO_TOKEN}\n\n"
-        "If git push returns 503, fix the remote URL to bypass the CMA proxy:\n"
-        f"    git remote set-url origin https://x-access-token:{KB_REPO_TOKEN}"
-        f"@github.com/<your-username>/<your-kb-repo>.git\n"
-        "Then retry the push."
-    )
+    # No credential in here: the kickoff is readable by every fetched page and
+    # is stored in the session transcript.
+    return guard.git_push_guidance(GIT_COMMITTER_EMAIL, GIT_COMMITTER_NAME)
 
 
 def single_url_kickoff() -> str:
@@ -449,7 +451,7 @@ def run_session(client: anthropic.Anthropic, kickoff: str) -> tuple[str, dict, s
     resources.append({
         "type": "github_repository",
         "url": KB_REPO_URL,
-        "authorization_token": KB_REPO_TOKEN,
+        "authorization_token": KB_SESSION_TOKEN,
         "mount_path": "/workspace/kb",
         "checkout": {"type": "branch", "name": "main"},
     })
@@ -459,6 +461,9 @@ def run_session(client: anthropic.Anthropic, kickoff: str) -> tuple[str, dict, s
         agent_ref = {"type": "agent", "id": AGENT_ID, "version": int(AGENT_VERSION)}
     else:
         agent_ref = AGENT_ID  # string shorthand → latest version
+
+    guard.assert_no_secrets(kickoff, KB_REPO_TOKEN, KB_SESSION_TOKEN,
+                            os.environ.get("ANTHROPIC_API_KEY", ""))
 
     mode_label = f"single-url={SINGLE_URL}" if SINGLE_URL else f"slot={SLOT}"
     print(f"[{datetime.now(timezone.utc).isoformat()}] creating session "
@@ -550,17 +555,35 @@ def run_session(client: anthropic.Anthropic, kickoff: str) -> tuple[str, dict, s
     return session.id, usage_total, final.status, session_model
 
 
+def post_session_checks(base_sha: str | None, final_status: str) -> int:
+    """Fail the job if the session touched code/config; re-fire push-triggered work."""
+    ok = 0 if final_status in ("idle", "terminated") else 1
+    bad = guard.check_session_writes(KB_REPO_URL, KB_REPO_TOKEN, base_sha)
+    if bad:
+        guard.report_disallowed(bad)
+        return 2
+    if guard.session_made_commits(KB_REPO_URL, KB_REPO_TOKEN, base_sha):
+        # Job-token pushes don't fire push triggers. Dispatch any push-triggered
+        # follow-on workflows here, e.g.:
+        #   guard.dispatch_workflow(KB_REPO_URL, KB_REPO_TOKEN, "kb-hygiene.yml")
+        for wf in filter(None, os.environ.get("POST_SESSION_WORKFLOWS", "").split(",")):
+            guard.dispatch_workflow(KB_REPO_URL, KB_REPO_TOKEN, wf.strip())
+    return ok
+
+
 def main() -> int:
     client = anthropic.Anthropic()
 
     if SINGLE_URL:
+        base_sha = guard.branch_sha(KB_REPO_URL, KB_REPO_TOKEN)
         session_id, usage, final_status, run_model = run_session(client, single_url_kickoff())
+        rc = post_session_checks(base_sha, final_status)
         lib.append_cost_log(
             KB_REPO_URL, KB_REPO_TOKEN,
             pipeline="blog", slot="manual-url", model=run_model,
             usage=usage, session_id=session_id,
         )
-        return 0 if final_status in ("idle", "terminated") else 1
+        return rc
 
     selected, scored, raw_count, failed_feeds, last_ingest_iso = prefetch_and_rank(client)
     fb = feedback_pending()
@@ -578,6 +601,7 @@ def main() -> int:
         )
         return 0
 
+    base_sha = guard.branch_sha(KB_REPO_URL, KB_REPO_TOKEN)
     session_id, usage, final_status, run_model = run_session(
         client, scheduled_kickoff(selected, scored, raw_count, failed_feeds, last_ingest_iso)
     )
@@ -588,8 +612,9 @@ def main() -> int:
         note=f"{len(selected)} candidates, discovery={'yes' if DISCOVERY else 'no'}",
     )
 
-    # Exit code: 0 on clean idle/terminated, 1 otherwise
-    return 0 if final_status in ("idle", "terminated") else 1
+    rc = post_session_checks(base_sha, final_status)
+    # Exit code: 0 clean, 1 session error, 2 session wrote outside the content allow-list
+    return rc
 
 
 if __name__ == "__main__":
