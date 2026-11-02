@@ -80,6 +80,7 @@ jobs:
         with:
           sparse-checkout: |
             scripts/run-blog-ingest.py
+            scripts/session_guard.py
             scripts/kb_pipeline_lib.py
             _system/profile/feed_map.json
             _system/profile/feed_inbox.jsonl
